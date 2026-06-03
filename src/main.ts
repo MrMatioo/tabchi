@@ -1,12 +1,26 @@
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import * as readline from "readline/promises";
+import express, { Express, Request, Response } from "express";
 import { stdin, stdout } from "process";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 
 dotenv.config();
+
+function startSimpleServer() {
+  const app: Express = express();
+  const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+
+  app.get("/", (req: Request, res: Response) => {
+    res.send("Bot is alive!");
+  });
+
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`✅ Simple HTTP server is running on port ${port}`);
+  });
+}
 
 const rl = readline.createInterface({ input: stdin, output: stdout });
 async function ask(question: string): Promise<string> {
@@ -449,6 +463,8 @@ async function main() {
   const client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
   });
+
+  startSimpleServer();
 
   await client.start({
     phoneNumber: async () => await ask("Phone number: "),

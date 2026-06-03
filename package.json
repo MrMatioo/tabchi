@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "input": "^1.0.1",
     "loadash": "^1.0.0",
     "openai": "^6.41.0",
@@ -21,6 +22,7 @@
     "telegram": "^2.26.22"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^25.9.1",
     "typescript": "^6.0.3"
   }
