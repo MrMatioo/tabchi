@@ -1,7 +1,7 @@
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
 import * as readline from "readline/promises";
-import express, { Express, Request, Response } from "express";
+import http from "http";
 import { stdin, stdout } from "process";
 import random from "random";
 import dotenv from "dotenv";
@@ -10,15 +10,13 @@ import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 dotenv.config();
 
 function startSimpleServer() {
-  const app: Express = express();
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-
-  app.get("/", (req: Request, res: Response) => {
-    res.send("Bot is alive!");
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Bot is alive!");
   });
-
-  app.listen(port, "0.0.0.0", () => {
-    console.log(`✅ Simple HTTP server is running on port ${port}`);
+  server.listen(port, "0.0.0.0", () => {
+    console.log(`✅ Simple HTTP server running on port ${port}`);
   });
 }
 
