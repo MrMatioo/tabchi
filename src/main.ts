@@ -3,6 +3,7 @@ import { StringSession } from "telegram/sessions/index.js";
 import * as readline from "readline/promises";
 import http from "http";
 import { stdin, stdout } from "process";
+import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
@@ -115,6 +116,9 @@ async function main() {
   if (groupIds.length === 0) return;
 
   new TelegramChatAnalyzer(client, myId);
+  // Initialize and trigger the cautious PV promoter feature
+  const promoter = new TelegramPvPromoter(client, myId);
+  promoter.startPvPromotion().catch(() => {});
 
   sendHellos(client, groupIds).catch(() => {});
   const cleanGroupIds = groupIds.map((id) => id.replace(/^-100/, ""));

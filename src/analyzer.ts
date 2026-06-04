@@ -1,4 +1,5 @@
 import { TelegramClient } from "telegram";
+import { CustomFile } from "telegram/client/uploads.js";
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -15,9 +16,12 @@ export class TelegramChatAnalyzer {
   private stopSignal: boolean = false;
   private messagesLimitPerGroup: number = 35;
 
-  // 📥 Buffer to hold QA pairs temporarily in memory
   private qaBuffer: ChatPair[] = [];
   private readonly batchSize: number = 50;
+
+  // ⏳ 12-hour interval in milliseconds (12 * 60 * 60 * 1000)
+  private readonly backupIntervalMs: number = 12 * 60 * 60 * 1000;
+  private backupTimer!: NodeJS.Timeout;
 
   constructor(
     client: TelegramClient,
@@ -29,6 +33,7 @@ export class TelegramChatAnalyzer {
     this.logFilePath = path.resolve(process.cwd(), outputFilename);
     this.initFile();
     this.startPeriodicAnalysis();
+    this.startBackupSchedule();
   }
 
   private async initFile() {
@@ -43,6 +48,19 @@ export class TelegramChatAnalyzer {
         );
       } catch {}
     }
+  }
+
+  /**
+   * Schedules the database backup to Saved Messages every 12 hours
+   */
+  private startBackupSchedule() {
+    this.backupTimer = setInterval(async () => {
+      try {
+        await this.sendBackupToSavedMessages();
+      } catch (err) {
+        // Prevent background timer crashes
+      }
+    }, this.backupIntervalMs);
   }
 
   private async startPeriodicAnalysis() {
@@ -98,10 +116,8 @@ export class TelegramChatAnalyzer {
                     cleanA.length <= 50 &&
                     cleanQ !== cleanA
                   ) {
-                    // Push to memory buffer instead of immediate disk write
                     this.qaBuffer.push({ question: cleanQ, answer: cleanA });
 
-                    // When buffer reaches the threshold, flush all pairs to disk
                     if (this.qaBuffer.length >= this.batchSize) {
                       await this.flushBufferToDisk();
                     }
@@ -137,7 +153,7 @@ export class TelegramChatAnalyzer {
   }
 
   /**
-   * Flushes the full buffer to disk at once and logs the event
+   * Flushes the full buffer to disk at once
    */
   private async flushBufferToDisk() {
     try {
@@ -151,7 +167,6 @@ export class TelegramChatAnalyzer {
       const existingData: Record<string, string> = JSON.parse(fileData || "{}");
       const currentBatchSize = this.qaBuffer.length;
 
-      // Merge all items from buffer into database object
       for (const pair of this.qaBuffer) {
         existingData[pair.question] = pair.answer;
       }
@@ -161,16 +176,50 @@ export class TelegramChatAnalyzer {
         JSON.stringify(existingData, null, 2),
         "utf-8",
       );
-
-      // Clean and output a single concise log for the batch operation
       console.log(`[Analyzer] QA written: ${currentBatchSize}`);
+
       this.qaBuffer = [];
-    } catch (diskErr) {
-      // Gracefully prevent I/O crashes
+    } catch (diskErr) {}
+  }
+
+  /**
+   * Reads the current database file and sends it to Saved Messages
+   */
+  private async sendBackupToSavedMessages() {
+    try {
+      let fileData = "{}";
+      try {
+        fileData = await fs.readFile(this.logFilePath, "utf-8");
+      } catch {
+        return;
+      }
+
+      const existingData = JSON.parse(fileData || "{}");
+      const totalKeys = Object.keys(existingData).length;
+
+      const rawBuffer = await fs.readFile(this.logFilePath);
+      const toUpload = new CustomFile(
+        "collected_keywords.json",
+        rawBuffer.length,
+        this.logFilePath,
+        rawBuffer,
+      );
+
+      await this.client.sendFile("me", {
+        file: toUpload,
+        caption: `🕒 Periodic 12-Hour QA Backup\nTotal Keys Collected: ${totalKeys}\nStatus: Active`,
+      });
+
+      console.log(
+        `[Backup] File sent to Saved Messages. Total keys: ${totalKeys}`,
+      );
+    } catch (backupErr) {
+      // Catch network or upload blocks silently
     }
   }
 
   public shutdown() {
     this.stopSignal = true;
+    if (this.backupTimer) clearInterval(this.backupTimer);
   }
 }
