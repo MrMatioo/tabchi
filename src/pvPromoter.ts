@@ -9,9 +9,10 @@ export class TelegramPvPromoter {
   private storageFilePath: string;
   private isProcessing: boolean = false;
 
+  // Single blended message: Send "Salam" and "Promo text" together in one shot
   private readonly promoMessage: string =
-    "سلام بانو، اگه می‌خوای با هم بیشتر حرف بزنیم و گپ بزنیم، اول عضو کانالم شو بعد بیا پیوی منتظرتم:\n\n" +
-    "👉 @configCollectore";
+    "سلام اگه می‌خوای با هم بیشتر حرف بزنیم و گپ بزنیم، اول عضو کانالم شو بعد بیا پیوی منتظرتم:\n\n" +
+    "👉 https://t.me/+4xCwLqQ6PBoyYWVk ";
 
   constructor(
     client: TelegramClient,
@@ -67,20 +68,20 @@ export class TelegramPvPromoter {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
-    // Initial boot delay (45 seconds) to ensure startup stability
+    // Initial boot delay (45 seconds) to keep the startup silent and secure
     await new Promise((resolve) => setTimeout(resolve, 45000));
 
     try {
       const dialogs = await this.client.getDialogs({});
       const notifiedUsers = await this.getNotifiedUsers();
 
-      // Safely filter targeted human PVs without triggering TS type property errors
+      // Filter: ONLY target human PVs that have NEVER received any promo message before
       const targetUsers = dialogs.filter((d) => {
         return (
           d.isUser &&
           d.id !== undefined &&
           d.id.toString() !== this.myId &&
-          !notifiedUsers.includes(d.id.toString())
+          !notifiedUsers.includes(d.id.toString()) // Critical guard against duplicates
         );
       });
 
@@ -90,13 +91,16 @@ export class TelegramPvPromoter {
         const userId = dialog.id!.toString();
 
         try {
+          // Send the single text bundle (Salam + Ad link)
           await this.client.sendMessage(userId, { message: this.promoMessage });
+
+          // Lock the user ID instantly in the database before the next iteration or restart
           await this.saveUserAsNotified(userId);
 
           console.log(`[Promoter] Message delivered to PV -> [${userId}]`);
           messageCounter++;
 
-          // High-security micro delay: Sleep randomly between 1 to 5 minutes (60 to 300 seconds)
+          // High-security micro delay: Sleep randomly between 1 to 5 minutes
           const microDelaySec = random.int(60, 300);
           await new Promise((resolve) =>
             setTimeout(resolve, microDelaySec * 1000),
@@ -117,7 +121,7 @@ export class TelegramPvPromoter {
             pvErr.message?.includes("FLOOD") ||
             pvErr.message?.includes("LIMIT")
           ) {
-            // Force prolonged 30-minute sleep if Telegram issues a soft warning
+            // Force prolonged 30-minute sleep if Telegram raises a warning flag
             await new Promise((resolve) => setTimeout(resolve, 30 * 60 * 1000));
           }
         }
