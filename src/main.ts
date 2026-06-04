@@ -77,7 +77,7 @@ async function processQueue(client: TelegramClient) {
 
     const answer = getConversationalReply(item.userId, item.replyText);
     try {
-      const typingDelay = random.int(3, 7);
+      const typingDelay = random.int(5, 10);
       await sleep(typingDelay * 1000);
 
       await client.sendMessage(item.chatId, {
@@ -87,7 +87,7 @@ async function processQueue(client: TelegramClient) {
       // لاگ انگلیسی کوتاه شده برای پاسخ‌دهی خود ربات سارا
       console.log(`[Bot Reply] Sent -> [${answer}]`);
 
-      const delaySec = random.int(10, 25);
+      const delaySec = random.int(10, 45);
       await sleep(delaySec * 1000);
     } catch (err) {}
   }
