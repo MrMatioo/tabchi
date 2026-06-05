@@ -61,7 +61,7 @@ async function sendHellos(client: TelegramClient, groupIds: string[]) {
   for (const id of shuffled) {
     try {
       if (!id.startsWith("-100")) continue;
-      await client.sendMessage(id, { message: "سلام دوستان👩‍🦯" });
+      await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
       const delay = random.int(40, 140);
       await sleep(delay * 1000);
     } catch (err) {}

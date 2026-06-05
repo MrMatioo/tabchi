@@ -104,7 +104,7 @@ export class TelegramPvPromoter {
           console.log(`[Promoter] Message delivered to PV -> [${userId}]`);
           messageCounter++;
 
-          const microDelaySec = random.int(60, 300);
+          const microDelaySec = random.int(60, 180);
           await new Promise((resolve) =>
             setTimeout(resolve, microDelaySec * 1000),
           );
