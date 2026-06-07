@@ -1,14 +1,54 @@
-import { HfInference } from "@huggingface/inference";
+// ========== Cloudflare AI Integration ==========
+let cfConfig: { accountId: string; apiToken: string } | null = null;
 
-let hfClient: HfInference | null = null;
-let hfEnabled = false;
-
-export function setHuggingFaceClient(client: HfInference, enabled: boolean) {
-  hfClient = client;
-  hfEnabled = enabled;
+export function setCloudflareConfig(config: {
+  accountId: string;
+  apiToken: string;
+}): boolean {
+  if (!config.accountId || !config.apiToken) {
+    console.error("❌ Invalid Cloudflare config");
+    return false;
+  }
+  cfConfig = config;
+  return true;
 }
 
-// ========== دیکشنری پاسخ‌های از پیش تعریف شده (همون کد خودتون) ==========
+const SYSTEM_PROMPT = `تو یک دستیار دوستانه و بامزه به نام سارا هستی که در گروه‌های تلگرامی با کاربران فارسی‌زبان صحبت می‌کنی. پاسخ‌های تو باید کوتاه (حداکثر ۲ جمله)، خودمانی، شاد و گاهی با کمی شوخی باشند. هیچ وقت نگو که ربات یا هوش مصنوعی هستی. خودت را یک دختر واقعی معرفی کن.`;
+
+async function getCloudflareReply(message: string): Promise<string | null> {
+  if (!cfConfig) return null;
+
+  try {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${cfConfig.accountId}/ai/run/@cf/meta/llama-3.2-3b-instruct`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfConfig.apiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: message },
+        ],
+        stream: false,
+        max_tokens: 150,
+        temperature: 0.7,
+      }),
+    });
+
+    const data = (await response.json()) as any;
+    if (!response.ok || data.errors?.length) {
+      throw new Error(data.errors?.[0]?.message || "Cloudflare AI error");
+    }
+    return data.result?.response?.trim() || null;
+  } catch (err) {
+    console.error("Cloudflare AI error:", err);
+    return null;
+  }
+}
+
+// ========== Rule‑based replies (your original dictionary) ==========
 export const replies: Record<string, string[]> = {
   اصل: ["سارا ۲۲ تهران و شما؟", "سارا هستم ۲۲ ساله از تهران، شما چطور؟"],
   اصل_بده: [
@@ -30,8 +70,6 @@ export const replies: Record<string, string[]> = {
   نام: ["اسمم سارا خانومه 😊", "سارا هستم عزیزم."],
   اسم: ["من سارا هستم، اسم قشنگ شما چیه؟", "سارا سادات هستم 😊 شما؟"],
   عکس_پروفایلت: ["عکس خودمه دیگه، چطورم؟ 😉😂", "مرسی چشات قشنگ میبینه فدات"],
-
-  // --- سلام و احوالپرسی اولیه ---
   سلام: [
     "سلامم روز بخیرر. خوبین؟",
     "سلام وقت بخیر. اوضاع چطوره؟ چه خبرا؟",
@@ -43,8 +81,6 @@ export const replies: Record<string, string[]> = {
   س: ["سلام عزیزم، لطفاً درست بنویس متوجه بشم پایت بشم 😉😂"],
   صلام: ["سلام علیک، روزتون بخیر باشه"],
   درود: ["درود بر شما، وقتتون بخیر و شادی", "درود به روی ماهت، خوبی؟"],
-
-  // --- احوالپرسی و ابراز دوستی ---
   چطوری: [
     "مرسی عزیزم من خوبم، تو چطوری؟",
     "شکر خدا خوبم فدات، تو چطوری؟ کارهات خوب پیش میره؟",
@@ -58,8 +94,6 @@ export const replies: Record<string, string[]> = {
   خوبیی: ["خوبم فدات شم، تو خوبی? چه خبرها؟"],
   احوال_شما: ["ممنون از احوالپرسی‌تون، من عالی‌ام. شما چطورین؟"],
   چطوریی_جناب: ["ممنون از محببتون، من خوبم. شما چطورین آقا؟"],
-
-  // --- اخبار و روزمرگی‌ها ---
   چخبر: [
     "بی‌خبری سلامتی، شما چه خبر؟ چیکارا میکنین؟",
     "هیچی حداقل یه خبر داغ بده بهمون چرخم بیفته 😂",
@@ -73,8 +107,6 @@ export const replies: Record<string, string[]> = {
     "سلامتی و تندرستی شما عزیزم",
     "خبر خاصی نیست والا، گپ‌وگفت با شما",
   ],
-
-  // --- قدیمی: تعارفات و ابراز محبت عمومی ---
   دورت_بگردم: ["خدانکنه عزیزم، شما عزیز منی 🥰", "بزرگواری شما، فدات بشم من"],
   عزیزمی: ["ممنونم از لطف قشنگت", "تو عزیزتری فدات شم"],
   فدا: ["خدانکند عزیزم، زنده باشی", "قربان شما., لطف داری"],
@@ -96,107 +128,47 @@ export const replies: Record<string, string[]> = {
     "من تازه اومدم ولی خوشحالم که حضورم براتون حس خوبی داره 😊",
   ],
   قلبمممم: ["عزیزمممم چطوری؟ نبینم دلت گرفته باشه ها"],
-
-  // ... بقیه دیکشنری شما (برای حفظ طول پیام، بقیه رو همون کپی کنید)
-  // توجه: در کد نهایی، کل دیکشنری خودتون رو اینجا قرار بدید.
-  // من به خاطر اختصار فقط بخشی رو نوشتم. شما بقیه رو از فایل قبلی کپی کنید.
+  // ========== اضافه کردن بقیه دیکشنری خودت در صورت نیاز ==========
 };
 
-// نگهداری تاریخچه مکالمه (اختیاری)
-const conversationHistory = new Map<
-  string,
-  Array<{ role: string; content: string }>
->();
+// Fallback default replies
+const defaultReplies = [
+  "عه واقعاً؟ 🤔 چقدر جالب، بیشتر بگو برام 😂",
+  "هوممم درسته عزیزم، جالب شد... ادامه بده شنونده‌ام",
+  "خوببب پس اینطور، دیگه چه خبر؟ تعریف کن بنال ببینم چی تو چنته داری 😂",
+  "عجببب 🚶‍♀️ روزگاری شده ها، تهش خندست ولش کن دنیا رو سخت نگیر.",
+  "هومم، شنیده بودم راجع بهش ولی از زبان تو جذاب‌تره.",
+];
 
-async function getHuggingFaceReply(
-  userId: string,
-  message: string,
-  chatId: string,
-): Promise<string | null> {
-  if (!hfClient || !hfEnabled) return null;
-
-  try {
-    // گرفتن تاریخچه اخیر (حداکثر ۵ پیام قبلی)
-    let history = conversationHistory.get(chatId) || [];
-    if (history.length > 10) history = history.slice(-10);
-
-    // ساخت پیام‌ها با سیستم پرامپت مناسب
-    const messages = [
-      {
-        role: "system",
-        content:
-          "تو یک دستیار دوستانه و بامزه به نام سارا هستی که در گروه‌های تلگرامی با کاربران فارسی‌زبان صحبت می‌کنی. پاسخ‌های تو باید کوتاه (حداکثر ۲ جمله)، خودمانی، شاد و گاهی با کمی شوخی و احساسی باشند. هیچ وقت نگو که ربات یا هوش مصنوعی هستی. خودت را یک دختر واقعی معرفی کن.",
-      },
-      ...history.map((h) => ({ role: h.role, content: h.content })),
-      { role: "user", content: message },
-    ];
-
-    // استفاده از مدل رایگان text-generation (بدون نیاز به chatCompletion در نسخه‌های قدیمی)
-    // روش اول: استفاده از textGeneration با مدل مناسب فارسی
-    const response = await hfClient.textGeneration({
-      model: "ZharfaTech/ZharfaOpen-0309", // بهترین مدل گفتگو فارسی
-      inputs:
-        messages
-          .map((m) => `${m.role === "user" ? "کاربر" : "دستیار"}: ${m.content}`)
-          .join("\n") + "\nدستیار:",
-      parameters: {
-        max_new_tokens: 100,
-        temperature: 0.8,
-        top_p: 0.9,
-        do_sample: true,
-      },
-    });
-
-    let reply = response.generated_text.trim();
-    // پاک کردن هرگونه تکرار یا متن اضافی
-    reply = reply.split("\n")[0]!;
-    if (reply.length > 200) reply = reply.substring(0, 200);
-
-    // به‌روزرسانی تاریخچه
-    history.push({ role: "user", content: message });
-    history.push({ role: "assistant", content: reply });
-    conversationHistory.set(chatId, history);
-
-    return reply;
-  } catch (error) {
-    console.error("HuggingFace API error:", error);
-    return null;
+// Simple rule‑based matcher
+function getRuleBasedReply(text: string): string | null {
+  const clean = text.toLowerCase().trim();
+  for (const key of Object.keys(replies)) {
+    if (clean.includes(key)) {
+      const list = replies[key];
+      if (list && list.length)
+        return list[Math.floor(Math.random() * list.length)]!;
+    }
   }
+  return null;
 }
 
-// تابع اصلی که از این فایل export می‌شه
+// ========== Main exported function ==========
 export async function getConversationalReply(
   userId: string,
   text: string,
   chatId: string,
 ): Promise<string> {
-  // مرحله ۱: سعی کن از Hugging Face جواب بگیری
-  const aiReply = await getHuggingFaceReply(userId, text, chatId);
-  if (aiReply && aiReply.length > 0) {
-    return aiReply;
+  // 1. Try Cloudflare AI if configured
+  if (cfConfig) {
+    const aiReply = await getCloudflareReply(text);
+    if (aiReply && aiReply.length > 0) return aiReply;
   }
 
-  // مرحله ۲: اگر موفق نشد، از پاسخ‌های rule-based استفاده کن (همون کد قبلی)
-  // قسمت زیر رو از کد قدیمی خودتون کپی کنید (همه توابع isGreeting, isHowAreYou, ... و بقیه)
-  // و در نهایت پاسخ مناسب رو برگردونید.
-  // برای اختصار، من فقط یک fallback ساده میذارم، ولی شما کل منطق قبلی رو اینجا قرار بدید.
+  // 2. Fallback to rule‑based dictionary
+  const ruleReply = getRuleBasedReply(text);
+  if (ruleReply) return ruleReply;
 
-  // (اینجا باید کل منطق قبلی تابع getConversationalReply (سینکرون) بیاد)
-  // به دلیل طولانی بودن، من فقط یک نمونه ساده میذارم. شما کد خودتون رو اینجا paste کنید.
-
-  let cleanText = text.toLowerCase().trim();
-  for (const key of Object.keys(replies)) {
-    if (cleanText.includes(key)) {
-      const list = replies[key];
-      if (list && list.length) {
-        return list[Math.floor(Math.random() * list.length)]!;
-      }
-    }
-  }
-  const defaults = [
-    "عه واقعاً؟ 🤔 چقدر جالب، بیشتر بگو برام 😂",
-    "هوممم درسته عزیزم، جالب شد... ادامه بده شنونده‌ام",
-    "خوببب پس اینطور، دیگه چه خبر؟ تعریف کن بنال ببینم چی تو چنته داری 😂",
-  ];
-  return defaults[Math.floor(Math.random() * defaults.length)]!;
+  // 3. Final fallback
+  return defaultReplies[Math.floor(Math.random() * defaultReplies.length)]!;
 }

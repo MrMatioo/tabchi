@@ -7,12 +7,12 @@ import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
-import { getConversationalReply, setHuggingFaceClient } from "./replies.js";
+import { getConversationalReply, setCloudflareConfig } from "./replies.js";
 import { TelegramChatAnalyzer } from "./analyzer.js";
-import { HfInference } from "@huggingface/inference";
 
 dotenv.config();
 
+// ========== Keep-alive HTTP server for Render ==========
 function startSimpleServer() {
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const server = http.createServer((req, res) => {
@@ -22,38 +22,37 @@ function startSimpleServer() {
   server.listen(port, "0.0.0.0");
 }
 
+// ========== Readline helper ==========
 const rl = readline.createInterface({ input: stdin, output: stdout });
 async function ask(question: string): Promise<string> {
   const answer = await rl.question(question);
   return answer.trim();
 }
 
+// ========== Environment variables ==========
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
-const hfApiToken = process.env.HF_API_TOKEN;
+const cfAccountId = process.env.CF_ACCOUNT_ID;
+const cfApiToken = process.env.CF_API_TOKEN;
 
-if (!hfApiToken) {
-  console.warn(
-    "⚠️ HF_API_TOKEN not set. AI replies will fallback to rule-based.",
-  );
+if (!apiId || !apiHash) {
+  console.error("❌ API_ID or API_HASH missing in .env");
+  process.exit(1);
 }
 
-// Initialize Hugging Face client
-const hfClient = new HfInference(hfApiToken || "dummy");
-setHuggingFaceClient(hfClient, !!hfApiToken);
-
+// ========== Queue for processing replies ==========
 interface QueueItem {
   chatId: string;
   messageId: number;
   replyText: string;
   userId: string;
 }
-
 const queue: QueueItem[] = [];
 let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ========== Get all group IDs ==========
 async function getGroupIds(client: TelegramClient): Promise<string[]> {
   const dialogs = await client.getDialogs({});
   return dialogs
@@ -61,25 +60,26 @@ async function getGroupIds(client: TelegramClient): Promise<string[]> {
     .map((d) => d.id!.toString());
 }
 
+// ========== Send hello messages to groups ==========
 async function sendHellos(client: TelegramClient, groupIds: string[]) {
   const shuffled = [...groupIds];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    const temp = shuffled[i]!;
-    shuffled[i] = shuffled[j]!;
-    shuffled[j] = temp;
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
   }
-
   for (const id of shuffled) {
     try {
       if (!id.startsWith("-100")) continue;
       await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
       const delay = random.int(40, 140);
       await sleep(delay * 1000);
-    } catch (err) {}
+    } catch (err) {
+      // ignore
+    }
   }
 }
 
+// ========== Process queued messages ==========
 async function processQueue(client: TelegramClient) {
   if (processing) return;
   processing = true;
@@ -105,11 +105,14 @@ async function processQueue(client: TelegramClient) {
 
       const delaySec = random.int(10, 45);
       await sleep(delaySec * 1000);
-    } catch (err) {}
+    } catch (err) {
+      // ignore
+    }
   }
   processing = false;
 }
 
+// ========== Main ==========
 async function main() {
   const client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 10,
@@ -120,21 +123,36 @@ async function main() {
     phoneNumber: async () => await ask("Phone number: "),
     phoneCode: async () => await ask("Code: "),
     password: async () => await ask("2FA password (if any): "),
-    onError: () => {},
+    onError: (err) => console.error(err),
   });
 
-  console.log("✅ Connected");
+  console.log("✅ Connected to Telegram");
   const me = await client.getMe();
   const myId = me.id.toString();
   const groupIds = await getGroupIds(client);
 
-  if (groupIds.length === 0) return;
+  if (groupIds.length === 0) {
+    console.log("⚠️ No groups found.");
+    return;
+  }
 
+  // Initialize Cloudflare AI config
+  if (cfAccountId && cfApiToken) {
+    setCloudflareConfig({ accountId: cfAccountId, apiToken: cfApiToken });
+    console.log("✅ Cloudflare AI configured.");
+  } else {
+    console.warn(
+      "⚠️ Cloudflare credentials missing. AI replies disabled, falling back to rule-based.",
+    );
+  }
+
+  // Start modules
   new TelegramChatAnalyzer(client, myId);
   const promoter = new TelegramPvPromoter(client, myId);
   promoter.startPvPromotion().catch(() => {});
 
   sendHellos(client, groupIds).catch(() => {});
+
   const cleanGroupIds = groupIds.map((id) => id.replace(/^-100/, ""));
 
   client.addEventHandler(async (event: NewMessageEvent) => {
@@ -166,10 +184,14 @@ async function main() {
             });
             processQueue(client);
           }
-        } catch (err) {}
+        } catch (err) {
+          // ignore
+        }
       }
-    } catch (handlerErr) {}
+    } catch (err) {
+      // ignore
+    }
   }, new NewMessage({}));
 }
 
-main().catch(() => {});
+main().catch(console.error);
