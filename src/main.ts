@@ -7,8 +7,9 @@ import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
-import { getConversationalReply } from "./replies.js";
+import { getConversationalReply, setHuggingFaceClient } from "./replies.js";
 import { TelegramChatAnalyzer } from "./analyzer.js";
+import { HfInference } from "@huggingface/inference";
 
 dotenv.config();
 
@@ -30,6 +31,17 @@ async function ask(question: string): Promise<string> {
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
+const hfApiToken = process.env.HF_API_TOKEN;
+
+if (!hfApiToken) {
+  console.warn(
+    "⚠️ HF_API_TOKEN not set. AI replies will fallback to rule-based.",
+  );
+}
+
+// Initialize Hugging Face client
+const hfClient = new HfInference(hfApiToken || "dummy");
+setHuggingFaceClient(hfClient, !!hfApiToken);
 
 interface QueueItem {
   chatId: string;
@@ -76,7 +88,11 @@ async function processQueue(client: TelegramClient) {
     const item = queue.shift();
     if (!item) continue;
 
-    const answer = getConversationalReply(item.userId, item.replyText);
+    const answer = await getConversationalReply(
+      item.userId,
+      item.replyText,
+      item.chatId,
+    );
     try {
       const typingDelay = random.int(5, 10);
       await sleep(typingDelay * 1000);
@@ -85,8 +101,7 @@ async function processQueue(client: TelegramClient) {
         message: answer,
         replyTo: item.messageId,
       });
-      // لاگ انگلیسی کوتاه شده برای پاسخ‌دهی خود ربات سارا
-      console.log(`[Bot Reply] Sent -> [${answer}]`);
+      console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
 
       const delaySec = random.int(10, 45);
       await sleep(delaySec * 1000);
@@ -116,7 +131,6 @@ async function main() {
   if (groupIds.length === 0) return;
 
   new TelegramChatAnalyzer(client, myId);
-  // Initialize and trigger the cautious PV promoter feature
   const promoter = new TelegramPvPromoter(client, myId);
   promoter.startPvPromotion().catch(() => {});
 
