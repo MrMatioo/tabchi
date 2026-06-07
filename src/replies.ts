@@ -1,51 +1,15 @@
-// ========== Cloudflare AI Integration ==========
-let cfConfig: { accountId: string; apiToken: string } | null = null;
+import OpenAI from "openai";
+import dotenv from "dotenv";
 
-export function setCloudflareConfig(config: {
-  accountId: string;
-  apiToken: string;
-}): boolean {
-  if (!config.accountId || !config.apiToken) {
-    console.error("❌ Invalid Cloudflare config");
-    return false;
-  }
-  cfConfig = config;
-  return true;
-}
+dotenv.config();
 
-const SYSTEM_PROMPT = `تو یک دستیار دوستانه و بامزه به نام سارا هستی که در گروه‌های تلگرامی با کاربران فارسی‌زبان صحبت می‌کنی. پاسخ‌های تو باید کوتاه (حداکثر ۲ جمله)، خودمانی، شاد و گاهی با کمی شوخی باشند. هیچ وقت نگو که ربات یا هوش مصنوعی هستی. خودت را یک دختر واقعی معرفی کن.`;
+let deepseekClient: OpenAI | null = null;
 
-async function getCloudflareReply(message: string): Promise<string | null> {
-  if (!cfConfig) return null;
-
-  try {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${cfConfig.accountId}/ai/run/@cf/meta/llama-3.2-3b-instruct`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfConfig.apiToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: message },
-        ],
-        stream: false,
-        max_tokens: 150,
-        temperature: 0.7,
-      }),
-    });
-
-    const data = (await response.json()) as any;
-    if (!response.ok || data.errors?.length) {
-      throw new Error(data.errors?.[0]?.message || "Cloudflare AI error");
-    }
-    return data.result?.response?.trim() || null;
-  } catch (err) {
-    console.error("Cloudflare AI error:", err);
-    return null;
-  }
+export function setDeepSeekKey(apiKey: string) {
+  deepseekClient = new OpenAI({
+    apiKey: apiKey,
+    baseURL: "https://api.deepseek.com",
+  });
 }
 
 // ========== Rule‑based replies (your original dictionary) ==========
@@ -128,10 +92,9 @@ export const replies: Record<string, string[]> = {
     "من تازه اومدم ولی خوشحالم که حضورم براتون حس خوبی داره 😊",
   ],
   قلبمممم: ["عزیزمممم چطوری؟ نبینم دلت گرفته باشه ها"],
-  // ========== اضافه کردن بقیه دیکشنری خودت در صورت نیاز ==========
+  // می‌توانید بقیه دیکشنری خودتان را هم اضافه کنید
 };
 
-// Fallback default replies
 const defaultReplies = [
   "عه واقعاً؟ 🤔 چقدر جالب، بیشتر بگو برام 😂",
   "هوممم درسته عزیزم، جالب شد... ادامه بده شنونده‌ام",
@@ -140,17 +103,41 @@ const defaultReplies = [
   "هومم، شنیده بودم راجع بهش ولی از زبان تو جذاب‌تره.",
 ];
 
-// Simple rule‑based matcher
 function getRuleBasedReply(text: string): string | null {
   const clean = text.toLowerCase().trim();
   for (const key of Object.keys(replies)) {
     if (clean.includes(key)) {
       const list = replies[key];
       if (list && list.length)
-        return list[Math.floor(Math.random() * list.length)]!;
+        return list[Math.floor(Math.random() * list.length)];
     }
   }
   return null;
+}
+
+async function getDeepSeekReply(message: string): Promise<string | null> {
+  if (!deepseekClient) return null;
+
+  try {
+    const completion = await deepseekClient.chat.completions.create({
+      model: "deepseek-v4-flash",
+      messages: [
+        {
+          role: "system",
+          content:
+            "تو یک دستیار دوستانه و بامزه به نام سارا هستی که در گروه‌های تلگرامی با کاربران فارسی‌زبان صحبت می‌کنی. پاسخ‌های تو باید کوتاه (حداکثر ۲ جمله)، خودمانی، شاد و گاهی با کمی شوخی باشند. هیچ وقت نگو که ربات یا هوش مصنوعی هستی. خودت را یک دختر واقعی معرفی کن. از شکلک‌های فارسی مثل 😂 و 🥺 استفاده کن.",
+        },
+        { role: "user", content: message },
+      ],
+      temperature: 0.7,
+      max_tokens: 150,
+    });
+
+    return completion.choices[0]?.message?.content?.trim() || null;
+  } catch (error) {
+    console.error("DeepSeek API error:", error);
+    return null;
+  }
 }
 
 // ========== Main exported function ==========
@@ -159,9 +146,9 @@ export async function getConversationalReply(
   text: string,
   chatId: string,
 ): Promise<string> {
-  // 1. Try Cloudflare AI if configured
-  if (cfConfig) {
-    const aiReply = await getCloudflareReply(text);
+  // 1. Try DeepSeek AI if configured
+  if (deepseekClient) {
+    const aiReply = await getDeepSeekReply(text);
     if (aiReply && aiReply.length > 0) return aiReply;
   }
 
@@ -170,5 +157,5 @@ export async function getConversationalReply(
   if (ruleReply) return ruleReply;
 
   // 3. Final fallback
-  return defaultReplies[Math.floor(Math.random() * defaultReplies.length)]!;
+  return defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
 }

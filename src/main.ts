@@ -7,7 +7,7 @@ import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
-import { getConversationalReply, setCloudflareConfig } from "./replies.js";
+import { getConversationalReply, setDeepSeekKey } from "./replies.js";
 import { TelegramChatAnalyzer } from "./analyzer.js";
 
 dotenv.config();
@@ -33,12 +33,20 @@ async function ask(question: string): Promise<string> {
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
-const cfAccountId = process.env.CF_ACCOUNT_ID;
-const cfApiToken = process.env.CF_API_TOKEN;
+const deepSeekKey = process.env.DEEPSEEK_API_KEY;
 
 if (!apiId || !apiHash) {
   console.error("❌ API_ID or API_HASH missing in .env");
   process.exit(1);
+}
+
+if (!deepSeekKey) {
+  console.warn(
+    "⚠️ DEEPSEEK_API_KEY not set. AI replies will fallback to rule-based.",
+  );
+} else {
+  setDeepSeekKey(deepSeekKey);
+  console.log("✅ DeepSeek API configured.");
 }
 
 // ========== Queue for processing replies ==========
@@ -134,16 +142,6 @@ async function main() {
   if (groupIds.length === 0) {
     console.log("⚠️ No groups found.");
     return;
-  }
-
-  // Initialize Cloudflare AI config
-  if (cfAccountId && cfApiToken) {
-    setCloudflareConfig({ accountId: cfAccountId, apiToken: cfApiToken });
-    console.log("✅ Cloudflare AI configured.");
-  } else {
-    console.warn(
-      "⚠️ Cloudflare credentials missing. AI replies disabled, falling back to rule-based.",
-    );
   }
 
   // Start modules
