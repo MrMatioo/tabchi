@@ -1,15 +1,15 @@
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-let deepseekClient: OpenAI | null = null;
+let genAI: GoogleGenerativeAI | null = null;
+let model: any = null;
 
-export function setDeepSeekKey(apiKey: string) {
-  deepseekClient = new OpenAI({
-    apiKey: apiKey,
-    baseURL: "https://api.deepseek.com",
-  });
+export function setGeminiKey(apiKey: string) {
+  genAI = new GoogleGenerativeAI(apiKey);
+  model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+  console.log("✅ Gemini AI configured with model: gemini-2.0-flash");
 }
 
 // ========== Rule‑based replies (your original dictionary) ==========
@@ -92,7 +92,6 @@ export const replies: Record<string, string[]> = {
     "من تازه اومدم ولی خوشحالم که حضورم براتون حس خوبی داره 😊",
   ],
   قلبمممم: ["عزیزمممم چطوری؟ نبینم دلت گرفته باشه ها"],
-  // می‌توانید بقیه دیکشنری خودتان را هم اضافه کنید
 };
 
 const defaultReplies = [
@@ -115,27 +114,17 @@ function getRuleBasedReply(text: string): string | null {
   return null;
 }
 
-async function getDeepSeekReply(message: string): Promise<string | null> {
-  if (!deepseekClient) return null;
-
+async function getGeminiReply(message: string): Promise<string | null> {
+  if (!model) return null;
   try {
-    const completion = await deepseekClient.chat.completions.create({
-      model: "deepseek-v4-flash",
-      messages: [
-        {
-          role: "system",
-          content:
-            "تو یک دستیار دوستانه و بامزه به نام سارا هستی که در گروه‌های تلگرامی با کاربران فارسی‌زبان صحبت می‌کنی. پاسخ‌های تو باید کوتاه (حداکثر ۲ جمله)، خودمانی، شاد و گاهی با کمی شوخی باشند. هیچ وقت نگو که ربات یا هوش مصنوعی هستی. خودت را یک دختر واقعی معرفی کن. از شکلک‌های فارسی مثل 😂 و 🥺 استفاده کن.",
-        },
-        { role: "user", content: message },
-      ],
-      temperature: 0.7,
-      max_tokens: 150,
-    });
-
-    return completion.choices[0]?.message?.content?.trim() || null;
+    const systemPrompt =
+      "تو یک کاربر تلگرام هستی و توی گروه ها میری و چت میکنی و به کاربرانی که به تو ریپلای زدن جواب میدی اونا نباید حس کنن که تو یک ربات هستی در اصل تو یک فرد به اسم سارا 22 ساله از تهران هستی که تمام روزش را در گروه های تلگرامی چت میکند پس باید سعی کنی به زبان گروه های تلگرامی صحبت کنی.";
+    const fullPrompt = `${systemPrompt}\n\nکاربر می‌گوید: ${message}\n\nپاسخ سارا:`;
+    const result = await model.generateContent(fullPrompt);
+    const reply = result.response.text();
+    return reply?.trim() || null;
   } catch (error) {
-    console.error("DeepSeek API error:", error);
+    console.error("Gemini API error:", error);
     return null;
   }
 }
@@ -146,9 +135,9 @@ export async function getConversationalReply(
   text: string,
   chatId: string,
 ): Promise<string> {
-  // 1. Try DeepSeek AI if configured
-  if (deepseekClient) {
-    const aiReply = await getDeepSeekReply(text);
+  // 1. Try Gemini AI if configured
+  if (model) {
+    const aiReply = await getGeminiReply(text);
     if (aiReply && aiReply.length > 0) return aiReply;
   }
 

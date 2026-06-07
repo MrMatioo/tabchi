@@ -7,7 +7,7 @@ import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
-import { getConversationalReply, setDeepSeekKey } from "./replies.js";
+import { getConversationalReply, setGeminiKey } from "./replies.js";
 import { TelegramChatAnalyzer } from "./analyzer.js";
 
 dotenv.config();
@@ -33,20 +33,20 @@ async function ask(question: string): Promise<string> {
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
-const deepSeekKey = process.env.DEEPSEEK_API_KEY;
+const geminiApiKey = process.env.GEMINI_API_KEY;
 
 if (!apiId || !apiHash) {
   console.error("❌ API_ID or API_HASH missing in .env");
   process.exit(1);
 }
 
-if (!deepSeekKey) {
+if (!geminiApiKey) {
   console.warn(
-    "⚠️ DEEPSEEK_API_KEY not set. AI replies will fallback to rule-based.",
+    "⚠️ GEMINI_API_KEY not set. AI replies will fallback to rule-based.",
   );
 } else {
-  setDeepSeekKey(deepSeekKey);
-  console.log("✅ DeepSeek API configured.");
+  setGeminiKey(geminiApiKey);
+  console.log("✅ Gemini AI configured.");
 }
 
 // ========== Queue for processing replies ==========
