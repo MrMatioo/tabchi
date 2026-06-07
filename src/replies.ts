@@ -109,7 +109,7 @@ function getRuleBasedReply(text: string): string | null {
     if (clean.includes(key)) {
       const list = replies[key];
       if (list && list.length)
-        return list[Math.floor(Math.random() * list.length)];
+        return list[Math.floor(Math.random() * list.length)]!;
     }
   }
   return null;
@@ -157,5 +157,5 @@ export async function getConversationalReply(
   if (ruleReply) return ruleReply;
 
   // 3. Final fallback
-  return defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
+  return defaultReplies[Math.floor(Math.random() * defaultReplies.length)]!;
 }
