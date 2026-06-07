@@ -1,15 +1,16 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-let genAI: GoogleGenerativeAI | null = null;
-let model: any = null;
+let cfAccountId: string | null = null;
+let cfApiToken: string | null = null;
 
-export function setGeminiKey(apiKey: string) {
-  genAI = new GoogleGenerativeAI(apiKey);
-  model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-  console.log("✅ Gemini AI configured with model: gemini-2.0-flash");
+export function setCloudflareConfig(accountId: string, apiToken: string) {
+  cfAccountId = accountId;
+  cfApiToken = apiToken;
+  console.log(
+    "✅ Cloudflare AI configured with model: @cf/mistral/mistral-7b-instruct-v0.3",
+  );
 }
 
 // ========== Rule‑based replies (your original dictionary) ==========
@@ -94,14 +95,6 @@ export const replies: Record<string, string[]> = {
   قلبمممم: ["عزیزمممم چطوری؟ نبینم دلت گرفته باشه ها"],
 };
 
-const defaultReplies = [
-  "عه واقعاً؟ 🤔 چقدر جالب، بیشتر بگو برام 😂",
-  "هوممم درسته عزیزم، جالب شد... ادامه بده شنونده‌ام",
-  "خوببب پس اینطور، دیگه چه خبر؟ تعریف کن بنال ببینم چی تو چنته داری 😂",
-  "عجببب 🚶‍♀️ روزگاری شده ها، تهش خندست ولش کن دنیا رو سخت نگیر.",
-  "هومم، شنیده بودم راجع بهش ولی از زبان تو جذاب‌تره.",
-];
-
 function getRuleBasedReply(text: string): string | null {
   const clean = text.toLowerCase().trim();
   for (const key of Object.keys(replies)) {
@@ -114,17 +107,45 @@ function getRuleBasedReply(text: string): string | null {
   return null;
 }
 
-async function getGeminiReply(message: string): Promise<string | null> {
-  if (!model) return null;
+async function getCloudflareReply(message: string): Promise<string | null> {
+  if (!cfAccountId || !cfApiToken) return null;
+
   try {
-    const systemPrompt =
-      "تو یک کاربر تلگرام هستی و توی گروه ها میری و چت میکنی و به کاربرانی که به تو ریپلای زدن جواب میدی اونا نباید حس کنن که تو یک ربات هستی در اصل تو یک فرد به اسم سارا 22 ساله از تهران هستی که تمام روزش را در گروه های تلگرامی چت میکند پس باید سعی کنی به زبان گروه های تلگرامی صحبت کنی.";
+    const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/ai/run/@cf/mistral/mistral-7b-instruct-v0.3`;
+
+    const systemPrompt = `تو یک کاربر تلگرام هستی و توی گروه ها میری و چت میکنی و به کاربرانی که به تو ریپلای زدن جواب میدی اونا نباید حس کنن که تو یک ربات هستی در اصل تو یک فرد به اسم سارا 22 ساله از تهران هستی که تمام روزش را در گروه های تلگرامی چت میکند پس باید سعی کنی به زبان گروه های تلگرامی صحبت کنی.;
+`;
+
     const fullPrompt = `${systemPrompt}\n\nکاربر می‌گوید: ${message}\n\nپاسخ سارا:`;
-    const result = await model.generateContent(fullPrompt);
-    const reply = result.response.text();
-    return reply?.trim() || null;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfApiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: fullPrompt }],
+        stream: false,
+        max_tokens: 150,
+        temperature: 0.7,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Cloudflare AI HTTP error:", response.status, errorText);
+      return null;
+    }
+
+    const data = (await response.json()) as any;
+    const reply = data.result?.response;
+    if (reply && typeof reply === "string") {
+      return reply.trim();
+    }
+    return null;
   } catch (error) {
-    console.error("Gemini API error:", error);
+    console.error("Cloudflare AI error:", error);
     return null;
   }
 }
@@ -135,9 +156,9 @@ export async function getConversationalReply(
   text: string,
   chatId: string,
 ): Promise<string> {
-  // 1. Try Gemini AI if configured
-  if (model) {
-    const aiReply = await getGeminiReply(text);
+  // 1. Try Cloudflare AI if configured
+  if (cfAccountId && cfApiToken) {
+    const aiReply = await getCloudflareReply(text);
     if (aiReply && aiReply.length > 0) return aiReply;
   }
 
@@ -146,5 +167,12 @@ export async function getConversationalReply(
   if (ruleReply) return ruleReply;
 
   // 3. Final fallback
+  const defaultReplies = [
+    "عه واقعاً؟ 🤔 چقدر جالب، بیشتر بگو برام 😂",
+    "هوممم درسته عزیزم، جالب شد... ادامه بده شنونده‌ام",
+    "خوببب پس اینطور، دیگه چه خبر؟ تعریف کن بنال ببینم چی تو چنته داری 😂",
+    "عجببب 🚶‍♀️ روزگاری شده ها، تهش خندست ولش کن دنیا رو سخت نگیر.",
+    "هومم، شنیده بودم راجع بهش ولی از زبان تو جذاب‌تره.",
+  ];
   return defaultReplies[Math.floor(Math.random() * defaultReplies.length)]!;
 }

@@ -7,7 +7,7 @@ import { TelegramPvPromoter } from "./pvPromoter.js";
 import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
-import { getConversationalReply, setGeminiKey } from "./replies.js";
+import { getConversationalReply, setCloudflareConfig } from "./replies.js";
 import { TelegramChatAnalyzer } from "./analyzer.js";
 
 dotenv.config();
@@ -33,20 +33,21 @@ async function ask(question: string): Promise<string> {
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
-const geminiApiKey = process.env.GEMINI_API_KEY;
+const cfAccountId = process.env.CF_ACCOUNT_ID;
+const cfApiToken = process.env.CF_API_TOKEN;
 
 if (!apiId || !apiHash) {
   console.error("❌ API_ID or API_HASH missing in .env");
   process.exit(1);
 }
 
-if (!geminiApiKey) {
+if (!cfAccountId || !cfApiToken) {
   console.warn(
-    "⚠️ GEMINI_API_KEY not set. AI replies will fallback to rule-based.",
+    "⚠️ Cloudflare credentials missing. AI replies will fallback to rule-based.",
   );
 } else {
-  setGeminiKey(geminiApiKey);
-  console.log("✅ Gemini AI configured.");
+  setCloudflareConfig(cfAccountId, cfApiToken);
+  console.log("✅ Cloudflare AI configured.");
 }
 
 // ========== Queue for processing replies ==========
