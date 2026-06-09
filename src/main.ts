@@ -40,7 +40,9 @@ interface QueueItem {
   messageId: number;
   replyText: string;
   userId: string;
+  isPvPromo?: boolean;
 }
+
 const queue: QueueItem[] = [];
 let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,7 +75,10 @@ async function sendHellos(client: TelegramClient, groupIds: string[]) {
   }
 }
 
-async function processQueue(client: TelegramClient) {
+async function processQueue(
+  client: TelegramClient,
+  promoter: TelegramPvPromoter,
+) {
   if (processing) return;
   processing = true;
 
@@ -81,10 +86,22 @@ async function processQueue(client: TelegramClient) {
     const item = queue.shift();
     if (!item) continue;
 
-    const answer = getConversationalReply(item.userId, item.replyText);
     try {
-      await sleep(random.int(12, 25) * 1000);
+      if (item.isPvPromo) {
+        await sleep(random.int(5, 12) * 1000);
+        await client.sendMessage(item.chatId, {
+          message: promoter.getPromoMessage(),
+        });
+        await promoter.saveUserAsNotified(item.chatId);
+        console.log(`[Promoter] Promo delivered to PV -> [${item.chatId}]`);
+        await sleep(random.int(20, 45) * 1000);
+        continue;
+      }
 
+      const answer = getConversationalReply(item.userId, item.replyText);
+      if (!answer) continue;
+
+      await sleep(random.int(12, 25) * 1000);
       await client.sendMessage(item.chatId, {
         message: answer,
         replyTo: item.messageId,
@@ -128,7 +145,7 @@ async function main() {
   }
 
   const promoter = new TelegramPvPromoter(client, myId);
-  promoter.startPvPromotion().catch(() => {});
+  await promoter.init();
   sendHellos(client, groupIds).catch(() => {});
 
   const cleanGroupIds = groupIds.map((id) => id.replace(/^-100/, ""));
@@ -143,16 +160,43 @@ async function main() {
 
       if (msg.isPrivate) {
         const cleanTxt = msg.text.trim();
-        const triggerRegex = /عضو شدم|شدم|اومدم|سلام|درود|سلم|خوبی/i;
+        const promoTriggerRegex = /عضو شدم|شدم|اومدم/i;
+        const chatTriggerRegex = /سلام|درود|سلم|خوبی|چطوری/i;
 
-        if (triggerRegex.test(cleanTxt)) {
+        if (promoter.hasNotified(senderId)) {
+          const answer = getConversationalReply(senderId, cleanTxt);
+          if (answer) {
+            queue.push({
+              chatId: senderId,
+              messageId: msg.id,
+              replyText: cleanTxt,
+              userId: senderId,
+            });
+            processQueue(client, promoter);
+          }
+          return;
+        }
+
+        if (promoTriggerRegex.test(cleanTxt)) {
           queue.push({
             chatId: senderId,
             messageId: msg.id,
-            replyText: msg.text,
+            replyText: cleanTxt,
             userId: senderId,
+            isPvPromo: true,
           });
-          processQueue(client);
+          processQueue(client, promoter);
+        } else if (chatTriggerRegex.test(cleanTxt)) {
+          const answer = getConversationalReply(senderId, cleanTxt);
+          if (answer) {
+            queue.push({
+              chatId: senderId,
+              messageId: msg.id,
+              replyText: cleanTxt,
+              userId: senderId,
+            });
+            processQueue(client, promoter);
+          }
         }
         return;
       }
@@ -163,15 +207,17 @@ async function main() {
 
         if (msg.replyTo) {
           const repliedMsg = await msg.getReplyMessage();
-
           if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
-            queue.push({
-              chatId,
-              messageId: msg.id,
-              replyText: msg.text,
-              userId: senderId,
-            });
-            processQueue(client);
+            const answer = getConversationalReply(senderId, msg.text);
+            if (answer) {
+              queue.push({
+                chatId,
+                messageId: msg.id,
+                replyText: msg.text,
+                userId: senderId,
+              });
+              processQueue(client, promoter);
+            }
           }
         }
       }

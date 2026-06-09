@@ -1,13 +1,11 @@
 import { TelegramClient } from "telegram";
 import * as fs from "fs/promises";
 import * as path from "path";
-import random from "random";
 
 export class TelegramPvPromoter {
   private client: TelegramClient;
   private myId: string = "";
   private storageFilePath: string;
-  private isProcessing: boolean = false;
   private notifiedUsersSet: Set<string> = new Set();
 
   private readonly promoMessage: string =
@@ -22,7 +20,18 @@ export class TelegramPvPromoter {
     this.client = client;
     this.myId = myId;
     this.storageFilePath = path.resolve(process.cwd(), filename);
-    this.loadStorageSync();
+  }
+
+  public async init() {
+    await this.loadStorageSync();
+  }
+
+  public getPromoMessage(): string {
+    return this.promoMessage;
+  }
+
+  public hasNotified(userId: string): boolean {
+    return this.notifiedUsersSet.has(userId);
   }
 
   private async loadStorageSync() {
@@ -42,7 +51,7 @@ export class TelegramPvPromoter {
     }
   }
 
-  private async saveUserAsNotified(userId: string) {
+  public async saveUserAsNotified(userId: string) {
     try {
       if (!this.notifiedUsersSet.has(userId)) {
         this.notifiedUsersSet.add(userId);
@@ -54,74 +63,5 @@ export class TelegramPvPromoter {
         );
       }
     } catch (err) {}
-  }
-
-  private async getPendingUsers(): Promise<string[]> {
-    try {
-      const dialogs = await this.client.getDialogs({});
-      return dialogs
-        .filter(
-          (d) =>
-            d.isUser &&
-            d.id !== undefined &&
-            d.id.toString() !== this.myId &&
-            !this.notifiedUsersSet.has(d.id.toString()),
-        )
-        .map((d) => d.id!.toString());
-    } catch (err) {
-      return [];
-    }
-  }
-
-  public async startPvPromotion() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
-
-    await new Promise((resolve) => setTimeout(resolve, 60000));
-    let messageCounter = 0;
-
-    try {
-      while (true) {
-        const pendingUsers = await this.getPendingUsers();
-        if (pendingUsers.length === 0) break;
-
-        const userId = pendingUsers[0]!;
-
-        try {
-          await this.client.sendMessage(userId, { message: this.promoMessage });
-          await this.saveUserAsNotified(userId);
-          console.log(`[Promoter] Message delivered to PV -> [${userId}]`);
-          messageCounter++;
-
-          const microDelaySec = random.int(240, 480);
-          await new Promise((resolve) =>
-            setTimeout(resolve, microDelaySec * 1000),
-          );
-
-          if (messageCounter % 3 === 0) {
-            const macroDelayMin = random.int(45, 70);
-            console.log(
-              `[Promoter] Heavy Anti-Flood protective wait. Resting for ${macroDelayMin} minutes...`,
-            );
-            await new Promise((resolve) =>
-              setTimeout(resolve, macroDelayMin * 60 * 1000),
-            );
-          }
-        } catch (pvErr: any) {
-          const errMsg = pvErr.message || "";
-          if (errMsg.includes("FLOOD") || errMsg.includes("LIMIT")) {
-            console.warn(
-              "[Promoter Anti-Flood] Heavy Flood block detected! Cooling down for 90 minutes.",
-            );
-            await new Promise((resolve) => setTimeout(resolve, 90 * 60 * 1000));
-          } else {
-            await this.saveUserAsNotified(userId);
-          }
-        }
-      }
-    } catch (macroErr) {
-    } finally {
-      this.isProcessing = false;
-    }
   }
 }
