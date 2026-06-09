@@ -93,14 +93,12 @@ export class TelegramPvPromoter {
           console.log(`[Promoter] Message delivered to PV -> [${userId}]`);
           messageCounter++;
 
-          // Ultra-safe micro rest: 4 to 8 minutes between separate promotional messages
           const microDelaySec = random.int(240, 480);
           await new Promise((resolve) =>
             setTimeout(resolve, microDelaySec * 1000),
           );
 
           if (messageCounter % 3 === 0) {
-            // Ultra-safe macro rest: 45 to 70 minutes cool down after 3 messages
             const macroDelayMin = random.int(45, 70);
             console.log(
               `[Promoter] Heavy Anti-Flood protective wait. Resting for ${macroDelayMin} minutes...`,

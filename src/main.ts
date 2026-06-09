@@ -45,6 +45,8 @@ const queue: QueueItem[] = [];
 let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const mySentMessagesCache = new Set<string>();
+
 async function getGroupIds(client: TelegramClient): Promise<string[]> {
   try {
     const dialogs = await client.getDialogs({});
@@ -65,8 +67,10 @@ async function sendHellos(client: TelegramClient, groupIds: string[]) {
 
   for (const id of shuffled) {
     try {
-      await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
-      // Highly defensive spacing: 180 to 360 seconds (3-6 minutes) between hello triggers
+      const sentMsg = await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
+      if (sentMsg && sentMsg.id) {
+        mySentMessagesCache.add(`${id}_${sentMsg.id}`);
+      }
       await sleep(random.int(180, 360) * 1000);
     } catch (err) {
       console.error(`[Hello Error] Failed for group ${id}`);
@@ -84,16 +88,22 @@ async function processQueue(client: TelegramClient) {
 
     const answer = getConversationalReply(item.userId, item.replyText);
     try {
-      // Natural human typing action delay: 12 to 25 seconds
       await sleep(random.int(12, 25) * 1000);
 
-      await client.sendMessage(item.chatId, {
+      const sentMsg = await client.sendMessage(item.chatId, {
         message: answer,
         replyTo: item.messageId,
       });
-      console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
 
-      // Extended Post-Reply protective cool down: 45 to 90 seconds
+      if (sentMsg && sentMsg.id) {
+        mySentMessagesCache.add(`${item.chatId}_${sentMsg.id}`);
+        if (mySentMessagesCache.size > 5000) {
+          const firstKey = mySentMessagesCache.values().next().value;
+          if (firstKey) mySentMessagesCache.delete(firstKey);
+        }
+      }
+
+      console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
       await sleep(random.int(45, 90) * 1000);
     } catch (err: any) {
       if (err.message?.includes("FLOOD")) {
@@ -165,11 +175,9 @@ async function main() {
         if (!cleanGroupIds.includes(cleanChatId)) return;
 
         if (msg.replyTo && msg.replyTo.replyToMsgId) {
-          const [repliedMsg] = await client.getMessages(chatId, {
-            ids: [msg.replyTo.replyToMsgId],
-          });
+          const targetKey = `${chatId}_${msg.replyTo.replyToMsgId}`;
 
-          if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
+          if (mySentMessagesCache.has(targetKey)) {
             queue.push({
               chatId,
               messageId: msg.id,
