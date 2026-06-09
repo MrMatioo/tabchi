@@ -162,9 +162,9 @@ async function main() {
         if (!cleanGroupIds.includes(cleanChatId)) return;
 
         if (msg.replyTo) {
-          const replyToUserId = msg.replyTo.replyToPeerId?.toString() || "";
+          const repliedMsg = await msg.getReplyMessage();
 
-          if (replyToUserId.includes(myId)) {
+          if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
             queue.push({
               chatId,
               messageId: msg.id,
