@@ -8,11 +8,9 @@ import random from "random";
 import dotenv from "dotenv";
 import { NewMessage, NewMessageEvent } from "telegram/events/index.js";
 import { getConversationalReply } from "./replies.js";
-import { TelegramChatAnalyzer } from "./analyzer.js";
 
 dotenv.config();
 
-// ========== Keep-alive HTTP server for Render ==========
 function startSimpleServer() {
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const server = http.createServer((req, res) => {
@@ -22,14 +20,12 @@ function startSimpleServer() {
   server.listen(port, "0.0.0.0");
 }
 
-// ========== Readline helper ==========
 const rl = readline.createInterface({ input: stdin, output: stdout });
 async function ask(question: string): Promise<string> {
   const answer = await rl.question(question);
   return answer.trim();
 }
 
-// ========== Environment variables ==========
 const apiId = Number(process.env.API_ID);
 const apiHash = String(process.env.API_HASH);
 const stringSession = new StringSession(process.env.STRINGSESSION || "");
@@ -39,7 +35,6 @@ if (!apiId || !apiHash) {
   process.exit(1);
 }
 
-// ========== Queue for processing replies ==========
 interface QueueItem {
   chatId: string;
   messageId: number;
@@ -50,34 +45,35 @@ const queue: QueueItem[] = [];
 let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ========== Get all group IDs ==========
 async function getGroupIds(client: TelegramClient): Promise<string[]> {
-  const dialogs = await client.getDialogs({});
-  return dialogs
-    .filter((d) => d.isGroup && d.entity && d.id !== undefined)
-    .map((d) => d.id!.toString());
+  try {
+    const dialogs = await client.getDialogs({});
+    return dialogs
+      .filter((d) => d.isGroup && d.entity && d.id !== undefined)
+      .map((d) => d.id!.toString());
+  } catch (err) {
+    return [];
+  }
 }
 
-// ========== Send hello messages to groups ==========
 async function sendHellos(client: TelegramClient, groupIds: string[]) {
-  const shuffled = [...groupIds];
+  const shuffled = [...groupIds].filter((id) => id.startsWith("-100"));
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
   }
+
   for (const id of shuffled) {
     try {
-      if (!id.startsWith("-100")) continue;
       await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
-      const delay = random.int(40, 140);
-      await sleep(delay * 1000);
+      // Highly defensive spacing: 180 to 360 seconds (3-6 minutes) between hello triggers
+      await sleep(random.int(180, 360) * 1000);
     } catch (err) {
-      // ignore
+      console.error(`[Hello Error] Failed for group ${id}`);
     }
   }
 }
 
-// ========== Process queued messages ==========
 async function processQueue(client: TelegramClient) {
   if (processing) return;
   processing = true;
@@ -88,8 +84,8 @@ async function processQueue(client: TelegramClient) {
 
     const answer = getConversationalReply(item.userId, item.replyText);
     try {
-      const typingDelay = random.int(5, 10);
-      await sleep(typingDelay * 1000);
+      // Natural human typing action delay: 12 to 25 seconds
+      await sleep(random.int(12, 25) * 1000);
 
       await client.sendMessage(item.chatId, {
         message: answer,
@@ -97,16 +93,20 @@ async function processQueue(client: TelegramClient) {
       });
       console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
 
-      const delaySec = random.int(10, 45);
-      await sleep(delaySec * 1000);
-    } catch (err) {
-      // ignore
+      // Extended Post-Reply protective cool down: 45 to 90 seconds
+      await sleep(random.int(45, 90) * 1000);
+    } catch (err: any) {
+      if (err.message?.includes("FLOOD")) {
+        console.warn(
+          "[Queue Anti-Flood] Heavy FloodWait triggered. Sleeping for 10 minutes.",
+        );
+        await sleep(10 * 60 * 1000);
+      }
     }
   }
   processing = false;
 }
 
-// ========== Main ==========
 async function main() {
   const client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 10,
@@ -130,11 +130,8 @@ async function main() {
     return;
   }
 
-  // Start modules
-  new TelegramChatAnalyzer(client, myId);
   const promoter = new TelegramPvPromoter(client, myId);
   promoter.startPvPromotion().catch(() => {});
-
   sendHellos(client, groupIds).catch(() => {});
 
   const cleanGroupIds = groupIds.map((id) => id.replace(/^-100/, ""));
@@ -142,40 +139,54 @@ async function main() {
   client.addEventHandler(async (event: NewMessageEvent) => {
     try {
       const msg = event.message;
-      if (
-        !msg ||
-        !msg.isGroup ||
-        !msg.text ||
-        msg.senderId?.toString() === myId
-      )
-        return;
+      if (!msg || !msg.text || msg.senderId?.toString() === myId) return;
 
       const chatId = msg.chatId?.toString() || "";
-      const cleanChatId = chatId.replace(/^-100/, "");
-      if (!cleanGroupIds.includes(cleanChatId)) return;
+      const senderId = msg.senderId?.toString() || "unknown";
 
-      if (msg.replyTo && msg.replyTo.replyToMsgId) {
-        try {
-          const [repliedMsg] = await client.getMessages(chatId, {
-            ids: msg.replyTo.replyToMsgId,
+      if (msg.isPrivate) {
+        const cleanTxt = msg.text.trim();
+        const triggerRegex = /عضو شدم|شدم|اومدم|سلام|درود|سلم|خوبی/i;
+
+        if (triggerRegex.test(cleanTxt)) {
+          queue.push({
+            chatId: senderId,
+            messageId: msg.id,
+            replyText: msg.text,
+            userId: senderId,
           });
+          processQueue(client);
+        }
+        return;
+      }
+
+      if (msg.isGroup) {
+        const cleanChatId = chatId.replace(/^-100/, "");
+        if (!cleanGroupIds.includes(cleanChatId)) return;
+
+        if (msg.replyTo && msg.replyTo.replyToMsgId) {
+          const [repliedMsg] = await client.getMessages(chatId, {
+            ids: [msg.replyTo.replyToMsgId],
+          });
+
           if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
             queue.push({
               chatId,
               messageId: msg.id,
-              replyText: msg.text || "",
-              userId: msg.senderId?.toString() || "unknown",
+              replyText: msg.text,
+              userId: senderId,
             });
             processQueue(client);
           }
-        } catch (err) {
-          // ignore
         }
       }
-    } catch (err) {
-      // ignore
-    }
+    } catch (err) {}
   }, new NewMessage({}));
+
+  process.on("SIGINT", () => {
+    console.log("Gracefully shutting down...");
+    process.exit(0);
+  });
 }
 
 main().catch(console.error);
