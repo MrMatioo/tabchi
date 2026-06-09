@@ -45,8 +45,6 @@ const queue: QueueItem[] = [];
 let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const mySentMessagesCache = new Set<string>();
-
 async function getGroupIds(client: TelegramClient): Promise<string[]> {
   try {
     const dialogs = await client.getDialogs({});
@@ -67,10 +65,7 @@ async function sendHellos(client: TelegramClient, groupIds: string[]) {
 
   for (const id of shuffled) {
     try {
-      const sentMsg = await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
-      if (sentMsg && sentMsg.id) {
-        mySentMessagesCache.add(`${id}_${sentMsg.id}`);
-      }
+      await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
       await sleep(random.int(180, 360) * 1000);
     } catch (err) {
       console.error(`[Hello Error] Failed for group ${id}`);
@@ -90,18 +85,10 @@ async function processQueue(client: TelegramClient) {
     try {
       await sleep(random.int(12, 25) * 1000);
 
-      const sentMsg = await client.sendMessage(item.chatId, {
+      await client.sendMessage(item.chatId, {
         message: answer,
         replyTo: item.messageId,
       });
-
-      if (sentMsg && sentMsg.id) {
-        mySentMessagesCache.add(`${item.chatId}_${sentMsg.id}`);
-        if (mySentMessagesCache.size > 5000) {
-          const firstKey = mySentMessagesCache.values().next().value;
-          if (firstKey) mySentMessagesCache.delete(firstKey);
-        }
-      }
 
       console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
       await sleep(random.int(45, 90) * 1000);
@@ -174,10 +161,10 @@ async function main() {
         const cleanChatId = chatId.replace(/^-100/, "");
         if (!cleanGroupIds.includes(cleanChatId)) return;
 
-        if (msg.replyTo && msg.replyTo.replyToMsgId) {
-          const targetKey = `${chatId}_${msg.replyTo.replyToMsgId}`;
+        if (msg.replyTo) {
+          const replyToUserId = msg.replyTo.replyToPeerId?.toString() || "";
 
-          if (mySentMessagesCache.has(targetKey)) {
+          if (replyToUserId.includes(myId)) {
             queue.push({
               chatId,
               messageId: msg.id,
