@@ -8,9 +8,12 @@ export class TelegramPvPromoter {
   private storageFilePath: string;
   private notifiedUsersSet: Set<string> = new Set();
 
-  private readonly promoMessage: string =
-    "سلام اگه می‌خوای با هم بیشتر حرف بزنیم و گپ بزنیم، اول عضو کانالم شو بعد بیا پیوی منتظرتم:\n\n" +
-    "👉 https://t.me/+4xCwLqQ6PBoyYWVk ";
+  private readonly promoMessage: string = `سلام میشه قبل اینکه حرف بزنیم ربات رو استارت بزنی و توی کانالم عضو بشی؟☹🥺 \n
+  
+  @configCollectore_Bot
+  
+  لینک کانال هم تو بیومه😇
+  `;
 
   constructor(
     client: TelegramClient,
