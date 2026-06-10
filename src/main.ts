@@ -145,7 +145,7 @@ async function processQueue(
       const answer = getConversationalReply(item.userId, item.replyText);
       if (!answer) continue;
 
-      await sleep(random.int(60, 180) * 1000);
+      await sleep(random.int(60, 360) * 1000);
 
       await client.markAsRead(item.chatId);
       const typingDuration = Math.min(
