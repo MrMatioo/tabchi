@@ -115,7 +115,7 @@ async function handleSingleMessage(
 
   try {
     if (item.isPvPromo) {
-      await sleep(random.int(90, 240) * 1000);
+      await sleep(random.int(50, 180) * 1000);
       await client.markAsRead(item.chatId);
       await simulateHumanTyping(client, item.chatId, random.int(4000, 9000));
       await client.sendMessage(item.chatId, {
