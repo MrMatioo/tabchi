@@ -43,8 +43,6 @@ interface QueueItem {
   isPvPromo?: boolean;
 }
 
-let queue: QueueItem[] = [];
-let processing = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function isSleepingTime(): boolean {
@@ -108,69 +106,47 @@ async function sendHellos(client: TelegramClient, groupIds: string[]) {
   }
 }
 
-async function processQueue(
+async function handleSingleMessage(
   client: TelegramClient,
   promoter: TelegramPvPromoter,
+  item: QueueItem,
 ) {
-  if (processing) return;
-  processing = true;
+  if (isSleepingTime()) return;
 
-  while (queue.length > 0) {
-    if (isSleepingTime()) {
-      queue.length = 0;
-      console.log("[Bot Sleep] Sleeping hour reached. Queue cleared.");
-      break;
+  try {
+    if (item.isPvPromo) {
+      await sleep(random.int(90, 240) * 1000);
+      await client.markAsRead(item.chatId);
+      await simulateHumanTyping(client, item.chatId, random.int(4000, 9000));
+      await client.sendMessage(item.chatId, {
+        message: promoter.getPromoMessage(),
+      });
+      await promoter.saveUserAsNotified(item.chatId);
+      console.log(`[Promoter] Promo delivered to PV -> [${item.chatId}]`);
+      return;
     }
 
-    const item = queue.shift();
-    if (!item) continue;
+    const answer = getConversationalReply(item.userId, item.replyText);
+    if (!answer) return;
 
-    try {
-      if (item.isPvPromo) {
-        await sleep(random.int(90, 240) * 1000);
+    // --- CHANGED: Dynamic delay set between 10 seconds to 2 minutes (10 to 120 seconds) ---
+    await sleep(random.int(10, 120) * 1000);
 
-        await client.markAsRead(item.chatId);
-        await simulateHumanTyping(client, item.chatId, random.int(4000, 9000));
+    await client.markAsRead(item.chatId);
+    const typingDuration = Math.min(Math.max(answer.length * 100, 2000), 7000);
+    await simulateHumanTyping(client, item.chatId, typingDuration);
 
-        await client.sendMessage(item.chatId, {
-          message: promoter.getPromoMessage(),
-        });
-        await promoter.saveUserAsNotified(item.chatId);
+    await client.sendMessage(item.chatId, {
+      message: answer,
+      replyTo: item.messageId,
+    });
 
-        console.log(`[Promoter] Promo delivered to PV -> [${item.chatId}]`);
-        await sleep(random.int(120, 300) * 1000);
-        continue;
-      }
-
-      const answer = getConversationalReply(item.userId, item.replyText);
-      if (!answer) continue;
-
-      await sleep(random.int(60, 360) * 1000);
-
-      await client.markAsRead(item.chatId);
-      const typingDuration = Math.min(
-        Math.max(answer.length * 150, 3000),
-        12000,
-      );
-      await simulateHumanTyping(client, item.chatId, typingDuration);
-
-      await client.sendMessage(item.chatId, {
-        message: answer,
-        replyTo: item.messageId,
-      });
-
-      console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
-      await sleep(random.int(90, 240) * 1000);
-    } catch (err: any) {
-      if (err.message?.includes("FLOOD")) {
-        console.warn(
-          "[Queue Anti-Flood] Heavy FloodWait triggered. Sleeping for 15 minutes.",
-        );
-        await sleep(15 * 60 * 1000);
-      }
+    console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
+  } catch (err: any) {
+    if (err.message?.includes("FLOOD")) {
+      console.warn("[Anti-Flood] FloodWait triggered. Heavy load detected.");
     }
   }
-  processing = false;
 }
 
 async function main() {
@@ -215,13 +191,11 @@ async function main() {
       if (msg.isPrivate) {
         const cleanTxt = msg.text.trim();
 
-        queue = queue.filter((item) => item.chatId !== senderId);
-
         if (!promoter.hasNotified(senderId)) {
           const answer = getConversationalReply(senderId, cleanTxt);
 
           if (answer) {
-            queue.push({
+            handleSingleMessage(client, promoter, {
               chatId: senderId,
               messageId: msg.id,
               replyText: cleanTxt,
@@ -229,27 +203,24 @@ async function main() {
             });
           }
 
-          queue.push({
+          handleSingleMessage(client, promoter, {
             chatId: senderId,
             messageId: msg.id,
             replyText: cleanTxt,
             userId: senderId,
             isPvPromo: true,
           });
-
-          processQueue(client, promoter);
           return;
         }
 
         const answer = getConversationalReply(senderId, cleanTxt);
         if (answer) {
-          queue.push({
+          handleSingleMessage(client, promoter, {
             chatId: senderId,
             messageId: msg.id,
             replyText: cleanTxt,
             userId: senderId,
           });
-          processQueue(client, promoter);
         }
         return;
       }
@@ -263,17 +234,12 @@ async function main() {
           if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
             const answer = getConversationalReply(senderId, msg.text);
             if (answer) {
-              queue = queue.filter(
-                (item) => !(item.chatId === chatId && item.userId === senderId),
-              );
-
-              queue.push({
+              handleSingleMessage(client, promoter, {
                 chatId,
                 messageId: msg.id,
                 replyText: msg.text,
                 userId: senderId,
               });
-              processQueue(client, promoter);
             }
           }
         }
