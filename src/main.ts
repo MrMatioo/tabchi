@@ -13,6 +13,29 @@ dotenv.config();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const log = {
+  info: (msg: string) =>
+    console.log(
+      `\x1b[36m[INFO]\x1b[0m ${new Date().toLocaleTimeString()} - ${msg}`,
+    ),
+  success: (msg: string) =>
+    console.log(
+      `\x1b[32m[SUCCESS]\x1b[0m ${new Date().toLocaleTimeString()} - ${msg}`,
+    ),
+  warn: (msg: string) =>
+    console.log(
+      `\x1b[33m[WARN]\x1b[0m ${new Date().toLocaleTimeString()} - ${msg}`,
+    ),
+  error: (msg: string) =>
+    console.log(
+      `\x1b[31m[ERROR]\x1b[0m ${new Date().toLocaleTimeString()} - ${msg}`,
+    ),
+  flood: (msg: string) =>
+    console.log(
+      `\x1b[35m[FLOOD]\x1b[0m ${new Date().toLocaleTimeString()} - ${msg}`,
+    ),
+};
+
 function startSimpleServer() {
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const server = http.createServer((req, res) => {
@@ -20,6 +43,7 @@ function startSimpleServer() {
     res.end("Bot is alive!");
   });
   server.listen(port, "0.0.0.0");
+  log.info(`HTTP server started on port ${port}`);
 }
 
 const rl = readline.createInterface({ input: stdin, output: stdout });
@@ -48,7 +72,9 @@ class FloodAwareExecutor {
           3600,
         );
         const finalWait = Math.max(wait, backoff);
-        console.warn(`[Flood] ${context} -> wait ${finalWait}s`);
+        log.flood(
+          `${context} -> wait ${finalWait}s (backoff level ${this.consecutiveFloods})`,
+        );
         await sleep(finalWait * 1000);
         if (this.consecutiveFloods < 3) return this.execute(fn, context);
         else return null;
@@ -98,7 +124,9 @@ async function processQueue(
           const sendParams: any = { message: job.replyText! };
           if (job.messageId) sendParams.replyTo = job.messageId;
           await client.sendMessage(job.chatId, sendParams);
-          console.log(`[Reply] sent to ${job.chatId}`);
+          log.success(
+            `Reply sent to ${job.chatId.slice(-6)} (${job.replyText!.slice(0, 30)}...)`,
+          );
         }, `reply_${job.chatId}`);
       } else if (job.type === "promo" && job.chatId && job.userId) {
         if (promoter.shouldSendPromo(job.userId)) {
@@ -114,19 +142,21 @@ async function processQueue(
               buttons: promoter.getPromoKeyboard() as any,
             });
             await promoter.saveUserAsNotified(job.userId!);
-            console.log(`[Promo] sent to ${job.chatId}`);
+            log.success(`Promo sent to ${job.chatId.slice(-6)}`);
           }, `promo_${job.chatId}`);
         }
       } else if (job.type === "groupMessage" && job.chatId && job.message) {
         await floodExecutor.execute(async () => {
           await sleep(random.int(8000, 20000));
           await client.sendMessage(job.chatId, { message: job.message! });
-          console.log(`[GroupMsg] sent to ${job.chatId}`);
+          log.info(
+            `Random group message sent to ${job.chatId.slice(-6)}: "${job.message}"`,
+          );
         }, `groupMsg_${job.chatId}`);
       }
       await sleep(random.int(8000, 18000));
     } catch (err) {
-      console.error("Job error:", err);
+      log.error(`Job error: ${err}`);
     }
   }
   isProcessing = false;
@@ -184,13 +214,14 @@ async function startPeriodicGroupMessages(
     },
     random.int(2.5 * 60 * 60 * 1000, 6 * 60 * 60 * 1000),
   );
+  log.info("Periodic group messages scheduler started (2.5-6h interval)");
 }
 
 async function main() {
   const apiId = Number(process.env.API_ID);
   const apiHash = String(process.env.API_HASH);
   if (!apiId || !apiHash) {
-    console.error("API_ID or API_HASH missing in .env");
+    log.error("API_ID or API_HASH missing in .env");
     process.exit(1);
   }
 
@@ -204,25 +235,28 @@ async function main() {
   );
   startSimpleServer();
 
+  log.info("Starting Telegram client...");
   await client.start({
     phoneNumber: async () => await ask("Phone number: "),
     phoneCode: async () => await ask("Code: "),
     password: async () => await ask("2FA password (if any): "),
-    onError: (err) => console.error(err),
+    onError: (err) => log.error(`Auth error: ${err}`),
   });
 
-  console.log("Connected to Telegram");
+  log.success("Connected to Telegram");
   const me = await client.getMe();
   const myId = me.id.toString();
+  log.info(`Logged in as ${me.firstName} (${myId})`);
 
   const dialogs = await client.getDialogs({});
   const groupIds = dialogs
     .filter((d) => d.isGroup && d.entity && d.id)
     .map((d) => d.id!.toString());
-  console.log(`Found ${groupIds.length} groups`);
+  log.info(`Found ${groupIds.length} groups`);
 
   const promoter = new TelegramPvPromoter(client, myId);
   await promoter.init();
+  log.info("Promoter initialized");
 
   startPeriodicGroupMessages(client, groupIds);
 
@@ -240,6 +274,10 @@ async function main() {
     const isPrivate = !chatId.startsWith("-100") && !chatId.startsWith("-");
     const isGroup = chatId.startsWith("-100");
 
+    log.info(
+      `Message from ${senderId.slice(-6)} (${isPrivate ? "PV" : "Group"}): "${text.slice(0, 40)}"`,
+    );
+
     if (isPrivate) {
       const userMsgCount = promoter.incrementMessageCount(senderId);
       const { reply, action } = getConversationalReply(
@@ -256,6 +294,9 @@ async function main() {
           replyText: reply,
           userId: senderId,
         });
+        log.info(
+          `Queued reply for ${senderId.slice(-6)} (msgCount=${userMsgCount})`,
+        );
       }
       if (
         !promoter.hasNotified(senderId) &&
@@ -267,6 +308,7 @@ async function main() {
           userId: senderId,
           replyText: text,
         });
+        log.info(`Queued promo for ${senderId.slice(-6)}`);
       }
       processQueue(client, promoter);
       return;
@@ -284,6 +326,9 @@ async function main() {
             replyText: reply,
             userId: senderId,
           });
+          log.info(
+            `Queued group reply for ${senderId.slice(-6)} in ${chatId.slice(-6)}`,
+          );
           processQueue(client, promoter);
         }
       }
@@ -291,9 +336,9 @@ async function main() {
   }, new NewMessage({}));
 
   process.on("SIGINT", () => {
-    console.log("Shutting down...");
+    log.warn("Shutting down gracefully...");
     process.exit(0);
   });
 }
 
-main().catch(console.error);
+main().catch((err) => log.error(`Fatal: ${err}`));
