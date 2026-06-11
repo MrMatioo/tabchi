@@ -86,6 +86,53 @@ class FloodAwareExecutor {
 
 const floodExecutor = new FloodAwareExecutor();
 
+class RateLimiter {
+  private lastSent: Map<string, number> = new Map();
+
+  async waitForSlot(chatId: string): Promise<void> {
+    const now = Date.now();
+    const last = this.lastSent.get(chatId) || 0;
+    const elapsed = now - last;
+    const minInterval = 3000;
+    if (elapsed < minInterval) {
+      const wait = minInterval - elapsed;
+      log.info(
+        `Rate limit for ${chatId.slice(-6)}: waiting ${Math.ceil(wait / 1000)}s`,
+      );
+      await sleep(wait);
+    }
+    this.lastSent.set(chatId, Date.now());
+  }
+}
+
+const rateLimiter = new RateLimiter();
+
+class DailyLimit {
+  private counts: Map<string, { count: number; date: string }> = new Map();
+
+  canSend(userId: string): boolean {
+    const today = new Date().toISOString().slice(0, 10);
+    const record = this.counts.get(userId);
+    if (!record || record.date !== today) {
+      this.counts.set(userId, { count: 0, date: today });
+      return true;
+    }
+    return record.count < 150;
+  }
+
+  increment(userId: string) {
+    const today = new Date().toISOString().slice(0, 10);
+    const record = this.counts.get(userId);
+    if (!record || record.date !== today) {
+      this.counts.set(userId, { count: 1, date: today });
+    } else {
+      record.count++;
+    }
+  }
+}
+
+const dailyLimit = new DailyLimit();
+
 interface QueueJob {
   type: "reply" | "promo" | "groupMessage";
   chatId: string;
@@ -108,6 +155,14 @@ async function processQueue(
     const job = jobQueue.shift();
     if (!job) continue;
     try {
+      if (job.userId && !dailyLimit.canSend(job.userId)) {
+        log.warn(
+          `Daily limit reached for user ${job.userId.slice(-6)}, skipping job`,
+        );
+        continue;
+      }
+      await rateLimiter.waitForSlot(job.chatId);
+
       if (
         job.type === "reply" &&
         job.chatId &&
@@ -124,6 +179,7 @@ async function processQueue(
           const sendParams: any = { message: job.replyText! };
           if (job.messageId) sendParams.replyTo = job.messageId;
           await client.sendMessage(job.chatId, sendParams);
+          if (job.userId) dailyLimit.increment(job.userId);
           log.success(
             `Reply sent to ${job.chatId.slice(-6)} (${job.replyText!.slice(0, 30)}...)`,
           );
@@ -142,6 +198,7 @@ async function processQueue(
               buttons: promoter.getPromoKeyboard() as any,
             });
             await promoter.saveUserAsNotified(job.userId!);
+            dailyLimit.increment(job.userId!);
             log.success(`Promo sent to ${job.chatId.slice(-6)}`);
           }, `promo_${job.chatId}`);
         }
@@ -150,11 +207,13 @@ async function processQueue(
           await sleep(random.int(8000, 20000));
           await client.sendMessage(job.chatId, { message: job.message! });
           log.info(
-            `Random group message sent to ${job.chatId.slice(-6)}: "${job.message}"`,
+            `Group message sent to ${job.chatId.slice(-6)}: "${job.message}"`,
           );
         }, `groupMsg_${job.chatId}`);
       }
-      await sleep(random.int(8000, 18000));
+      const delay = random.int(10000, 25000);
+      log.info(`Waiting ${Math.ceil(delay / 1000)}s before next job`);
+      await sleep(delay);
     } catch (err) {
       log.error(`Job error: ${err}`);
     }
@@ -170,7 +229,6 @@ async function simulateHumanTyping(
   const actions: Api.TypeSendMessageAction[] = [
     new Api.SendMessageTypingAction(),
     new Api.SendMessageRecordAudioAction(),
-    new Api.SendMessageUploadDocumentAction({ progress: 100 }),
   ];
   const start = Date.now();
   while (Date.now() - start < durationMs) {
@@ -182,6 +240,62 @@ async function simulateHumanTyping(
     await sleep(random.int(3500, 6000));
   }
 }
+
+async function sendInitialHelloToGroups(
+  client: TelegramClient,
+  groupIds: string[],
+) {
+  if (groupIds.length === 0) {
+    log.warn("No groups to send initial hello");
+    return;
+  }
+
+  log.info(
+    `Starting initial hello to ${groupIds.length} groups with delay between messages`,
+  );
+  const helloMessages = [
+    "سلام بچه ها چطورین؟ 👋",
+    "سلام چه خبرا؟ 😊",
+    "سلام خوبین؟",
+    "سلام به همگی 👋",
+  ];
+
+  let sentCount = 0;
+  for (let i = 0; i < groupIds.length; i++) {
+    const groupId = groupIds[i];
+    if (!groupId) continue;
+
+    if (!dailyLimit.canSend(groupId)) {
+      log.warn(
+        `Daily limit for group ${groupId.slice(-6)} reached, skipping remaining groups for today`,
+      );
+      break;
+    }
+
+    const msg = helloMessages[Math.floor(Math.random() * helloMessages.length)];
+    await rateLimiter.waitForSlot(groupId);
+    await floodExecutor.execute(async () => {
+      await client.sendMessage(groupId, { message: msg! });
+      dailyLimit.increment(groupId);
+      sentCount++;
+      log.success(
+        `Initial hello sent to group ${groupId.slice(-6)} (${sentCount}/${groupIds.length})`,
+      );
+    }, `initHello_${groupId}`);
+
+    const delay = random.int(30000, 60000);
+    if (i < groupIds.length - 1) {
+      log.info(`Waiting ${Math.ceil(delay / 1000)}s before next hello message`);
+      await sleep(delay);
+    }
+  }
+  log.info(
+    `Finished initial hello: sent to ${sentCount} groups out of ${groupIds.length}`,
+  );
+}
+
+let groupMessagesSentToday = 0;
+let lastGroupMessageDate = "";
 
 async function startPeriodicGroupMessages(
   client: TelegramClient,
@@ -198,23 +312,35 @@ async function startPeriodicGroupMessages(
   ];
   setInterval(
     async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      if (lastGroupMessageDate !== today) {
+        groupMessagesSentToday = 0;
+        lastGroupMessageDate = today;
+      }
+      if (groupMessagesSentToday >= 5) {
+        log.warn("Already sent 5 group messages today, skipping");
+        return;
+      }
       if (groupIds.length === 0) return;
-      const randomGroup = groupIds[Math.floor(Math.random() * groupIds.length)];
+      const randomIndex = Math.floor(Math.random() * groupIds.length);
+      const randomGroup = groupIds[randomIndex];
       if (!randomGroup) return;
       const randomMsg =
         randomMessages[Math.floor(Math.random() * randomMessages.length)];
-      if (randomMsg) {
-        jobQueue.push({
-          type: "groupMessage",
-          chatId: randomGroup,
-          message: randomMsg,
-        });
-        processQueue(client, null as any);
-      }
+      if (!randomMsg) return;
+      jobQueue.push({
+        type: "groupMessage",
+        chatId: randomGroup,
+        message: randomMsg,
+      });
+      groupMessagesSentToday++;
+      processQueue(client, null as any);
     },
-    random.int(2.5 * 60 * 60 * 1000, 6 * 60 * 60 * 1000),
+    random.int(60 * 60 * 1000, 90 * 60 * 1000),
   );
-  log.info("Periodic group messages scheduler started (2.5-6h interval)");
+  log.info(
+    "Periodic group messages scheduler started (1-1.5h interval, max 5/day)",
+  );
 }
 
 async function main() {
@@ -257,6 +383,8 @@ async function main() {
   const promoter = new TelegramPvPromoter(client, myId);
   await promoter.init();
   log.info("Promoter initialized");
+
+  await sendInitialHelloToGroups(client, groupIds);
 
   startPeriodicGroupMessages(client, groupIds);
 
