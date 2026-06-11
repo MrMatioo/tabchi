@@ -11,6 +11,8 @@ import { getConversationalReply } from "./replies.js";
 
 dotenv.config();
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function startSimpleServer() {
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const server = http.createServer((req, res) => {
@@ -26,31 +28,108 @@ async function ask(question: string): Promise<string> {
   return answer.trim();
 }
 
-const apiId = Number(process.env.API_ID);
-const apiHash = String(process.env.API_HASH);
-const stringSession = new StringSession(process.env.STRINGSESSION || "");
+class FloodAwareExecutor {
+  private consecutiveFloods = 0;
 
-if (!apiId || !apiHash) {
-  console.error("❌ API_ID or API_HASH missing in .env");
-  process.exit(1);
+  async execute<T>(fn: () => Promise<T>, context: string): Promise<T | null> {
+    try {
+      const result = await fn();
+      this.consecutiveFloods = Math.max(0, this.consecutiveFloods - 1);
+      return result;
+    } catch (err: any) {
+      const msg = err.message || "";
+      const floodMatch =
+        msg.match(/FLOOD_WAIT_(\d+)/i) || msg.match(/A wait of (\d+) seconds/i);
+      if (floodMatch) {
+        let wait = parseInt(floodMatch[1], 10);
+        this.consecutiveFloods++;
+        const backoff = Math.min(
+          30 * Math.pow(2, this.consecutiveFloods - 1),
+          3600,
+        );
+        const finalWait = Math.max(wait, backoff);
+        console.warn(`[Flood] ${context} -> wait ${finalWait}s`);
+        await sleep(finalWait * 1000);
+        if (this.consecutiveFloods < 3) return this.execute(fn, context);
+        else return null;
+      }
+      throw err;
+    }
+  }
 }
 
-interface QueueItem {
+const floodExecutor = new FloodAwareExecutor();
+
+interface QueueJob {
+  type: "reply" | "promo" | "groupMessage";
   chatId: string;
-  messageId: number;
-  replyText: string;
-  userId: string;
-  isPvPromo?: boolean;
+  messageId?: number;
+  replyText?: string;
+  userId?: string;
+  message?: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+let jobQueue: QueueJob[] = [];
+let isProcessing = false;
 
-function isSleepingTime(): boolean {
-  const tehranTime = new Date().toLocaleString("en-US", {
-    timeZone: "Asia/Tehran",
-  });
-  const currentHour = new Date(tehranTime).getHours();
-  return currentHour >= 2 && currentHour < 8;
+async function processQueue(
+  client: TelegramClient,
+  promoter: TelegramPvPromoter,
+) {
+  if (isProcessing) return;
+  isProcessing = true;
+  while (jobQueue.length > 0) {
+    const job = jobQueue.shift();
+    if (!job) continue;
+    try {
+      if (
+        job.type === "reply" &&
+        job.chatId &&
+        job.messageId &&
+        job.replyText
+      ) {
+        await floodExecutor.execute(async () => {
+          await client.markAsRead(job.chatId);
+          const typingDuration = Math.min(
+            Math.max(job.replyText!.length * 70, 1800),
+            7000,
+          );
+          await simulateHumanTyping(client, job.chatId, typingDuration);
+          const sendParams: any = { message: job.replyText! };
+          if (job.messageId) sendParams.replyTo = job.messageId;
+          await client.sendMessage(job.chatId, sendParams);
+          console.log(`[Reply] sent to ${job.chatId}`);
+        }, `reply_${job.chatId}`);
+      } else if (job.type === "promo" && job.chatId && job.userId) {
+        if (promoter.shouldSendPromo(job.userId)) {
+          await floodExecutor.execute(async () => {
+            await client.markAsRead(job.chatId);
+            await simulateHumanTyping(client, job.chatId, 5000);
+            const promoMsg = promoter.getPromoMessage(
+              job.userId!,
+              job.replyText || "",
+            );
+            await client.sendMessage(job.chatId, {
+              message: promoMsg,
+              buttons: promoter.getPromoKeyboard() as any,
+            });
+            await promoter.saveUserAsNotified(job.userId!);
+            console.log(`[Promo] sent to ${job.chatId}`);
+          }, `promo_${job.chatId}`);
+        }
+      } else if (job.type === "groupMessage" && job.chatId && job.message) {
+        await floodExecutor.execute(async () => {
+          await sleep(random.int(8000, 20000));
+          await client.sendMessage(job.chatId, { message: job.message! });
+          console.log(`[GroupMsg] sent to ${job.chatId}`);
+        }, `groupMsg_${job.chatId}`);
+      }
+      await sleep(random.int(8000, 18000));
+    } catch (err) {
+      console.error("Job error:", err);
+    }
+  }
+  isProcessing = false;
 }
 
 async function simulateHumanTyping(
@@ -58,101 +137,71 @@ async function simulateHumanTyping(
   peer: string,
   durationMs: number,
 ) {
-  try {
-    const startTime = Date.now();
-    while (Date.now() - startTime < durationMs) {
-      await client.invoke(
-        new Api.messages.SetTyping({
-          peer: peer,
-          action: new Api.SendMessageTypingAction(),
-        }),
-      );
-      await sleep(4000);
-    }
-  } catch (err) {}
-}
-
-async function getGroupIds(client: TelegramClient): Promise<string[]> {
-  try {
-    const dialogs = await client.getDialogs({});
-    return dialogs
-      .filter((d) => d.isGroup && d.entity && d.id !== undefined)
-      .map((d) => d.id!.toString());
-  } catch (err) {
-    return [];
-  }
-}
-
-async function sendHellos(client: TelegramClient, groupIds: string[]) {
-  const shuffled = [...groupIds].filter((id) => id.startsWith("-100"));
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
-  }
-
-  for (const id of shuffled) {
+  const actions: Api.TypeSendMessageAction[] = [
+    new Api.SendMessageTypingAction(),
+    new Api.SendMessageRecordAudioAction(),
+    new Api.SendMessageUploadDocumentAction({ progress: 100 }),
+  ];
+  const start = Date.now();
+  while (Date.now() - start < durationMs) {
+    const action = actions[Math.floor(Math.random() * actions.length)];
+    if (!action) continue;
     try {
-      if (isSleepingTime()) {
-        await sleep(60000);
-        continue;
-      }
-
-      await sleep(random.int(240, 540) * 1000);
-      await simulateHumanTyping(client, id, random.int(3000, 7000));
-      await client.sendMessage(id, { message: "👩‍🦯👩‍🦯👩‍🦯" });
-    } catch (err) {
-      console.error(`[Hello Error] Failed for group ${id}`);
-    }
+      await client.invoke(new Api.messages.SetTyping({ peer, action }));
+    } catch {}
+    await sleep(random.int(3500, 6000));
   }
 }
 
-async function handleSingleMessage(
+async function startPeriodicGroupMessages(
   client: TelegramClient,
-  promoter: TelegramPvPromoter,
-  item: QueueItem,
+  groupIds: string[],
 ) {
-  if (isSleepingTime()) return;
-
-  try {
-    if (item.isPvPromo) {
-      await sleep(random.int(50, 180) * 1000);
-      await client.markAsRead(item.chatId);
-      await simulateHumanTyping(client, item.chatId, random.int(4000, 9000));
-      await client.sendMessage(item.chatId, {
-        message: promoter.getPromoMessage(),
-      });
-      await promoter.saveUserAsNotified(item.chatId);
-      console.log(`[Promoter] Promo delivered to PV -> [${item.chatId}]`);
-      return;
-    }
-
-    const answer = getConversationalReply(item.userId, item.replyText);
-    if (!answer) return;
-
-    // --- CHANGED: Dynamic delay set between 10 seconds to 2 minutes (10 to 120 seconds) ---
-    await sleep(random.int(10, 120) * 1000);
-
-    await client.markAsRead(item.chatId);
-    const typingDuration = Math.min(Math.max(answer.length * 100, 2000), 7000);
-    await simulateHumanTyping(client, item.chatId, typingDuration);
-
-    await client.sendMessage(item.chatId, {
-      message: answer,
-      replyTo: item.messageId,
-    });
-
-    console.log(`[Bot Reply] Sent -> ${answer.substring(0, 50)}...`);
-  } catch (err: any) {
-    if (err.message?.includes("FLOOD")) {
-      console.warn("[Anti-Flood] FloodWait triggered. Heavy load detected.");
-    }
-  }
+  const randomMessages = [
+    "👩‍🦯👩‍🦯👩‍🦯",
+    "😂😂😂",
+    "🤔 نظرتون چیه؟",
+    "سلام چه خبرا؟",
+    "هیچی خاص?",
+    "😎",
+    "🔥",
+  ];
+  setInterval(
+    async () => {
+      if (groupIds.length === 0) return;
+      const randomGroup = groupIds[Math.floor(Math.random() * groupIds.length)];
+      if (!randomGroup) return;
+      const randomMsg =
+        randomMessages[Math.floor(Math.random() * randomMessages.length)];
+      if (randomMsg) {
+        jobQueue.push({
+          type: "groupMessage",
+          chatId: randomGroup,
+          message: randomMsg,
+        });
+        processQueue(client, null as any);
+      }
+    },
+    random.int(2.5 * 60 * 60 * 1000, 6 * 60 * 60 * 1000),
+  );
 }
 
 async function main() {
-  const client = new TelegramClient(stringSession, apiId, apiHash, {
-    connectionRetries: 10,
-  });
+  const apiId = Number(process.env.API_ID);
+  const apiHash = String(process.env.API_HASH);
+  if (!apiId || !apiHash) {
+    console.error("API_ID or API_HASH missing in .env");
+    process.exit(1);
+  }
+
+  const client = new TelegramClient(
+    new StringSession(process.env.STRINGSESSION || ""),
+    apiId,
+    apiHash,
+    {
+      connectionRetries: 5,
+    },
+  );
   startSimpleServer();
 
   await client.start({
@@ -162,93 +211,87 @@ async function main() {
     onError: (err) => console.error(err),
   });
 
-  console.log("✅ Connected to Telegram");
+  console.log("Connected to Telegram");
   const me = await client.getMe();
   const myId = me.id.toString();
-  const groupIds = await getGroupIds(client);
 
-  if (groupIds.length === 0) {
-    console.log("⚠️ No groups found.");
-    return;
-  }
+  const dialogs = await client.getDialogs({});
+  const groupIds = dialogs
+    .filter((d) => d.isGroup && d.entity && d.id)
+    .map((d) => d.id!.toString());
+  console.log(`Found ${groupIds.length} groups`);
 
   const promoter = new TelegramPvPromoter(client, myId);
   await promoter.init();
-  sendHellos(client, groupIds).catch(() => {});
 
-  const cleanGroupIds = groupIds.map((id) => id.replace(/^-100/, ""));
+  startPeriodicGroupMessages(client, groupIds);
 
   client.addEventHandler(async (event: NewMessageEvent) => {
-    try {
-      if (isSleepingTime()) return;
+    const msg = event.message;
+    if (!msg || !msg.text) return;
+    const chatIdObj = msg.chatId;
+    const senderIdObj = msg.senderId;
+    if (!chatIdObj || !senderIdObj) return;
+    const chatId = chatIdObj.toString();
+    const senderId = senderIdObj.toString();
+    if (senderId === myId) return;
 
-      const msg = event.message;
-      if (!msg || !msg.text || msg.senderId?.toString() === myId) return;
+    const text = msg.text.trim();
+    const isPrivate = !chatId.startsWith("-100") && !chatId.startsWith("-");
+    const isGroup = chatId.startsWith("-100");
 
-      const chatId = msg.chatId?.toString() || "";
-      const senderId = msg.senderId?.toString() || "unknown";
-
-      if (msg.isPrivate) {
-        const cleanTxt = msg.text.trim();
-
-        if (!promoter.hasNotified(senderId)) {
-          const answer = getConversationalReply(senderId, cleanTxt);
-
-          if (answer) {
-            handleSingleMessage(client, promoter, {
-              chatId: senderId,
-              messageId: msg.id,
-              replyText: cleanTxt,
-              userId: senderId,
-            });
-          }
-
-          handleSingleMessage(client, promoter, {
-            chatId: senderId,
-            messageId: msg.id,
-            replyText: cleanTxt,
-            userId: senderId,
-            isPvPromo: true,
-          });
-          return;
-        }
-
-        const answer = getConversationalReply(senderId, cleanTxt);
-        if (answer) {
-          handleSingleMessage(client, promoter, {
-            chatId: senderId,
-            messageId: msg.id,
-            replyText: cleanTxt,
-            userId: senderId,
-          });
-        }
-        return;
+    if (isPrivate) {
+      const userMsgCount = promoter.incrementMessageCount(senderId);
+      const { reply, action } = getConversationalReply(
+        senderId,
+        text,
+        userMsgCount,
+        promoter.hasNotified(senderId),
+      );
+      if (reply) {
+        jobQueue.push({
+          type: "reply",
+          chatId: senderId,
+          messageId: msg.id,
+          replyText: reply,
+          userId: senderId,
+        });
       }
+      if (
+        !promoter.hasNotified(senderId) &&
+        promoter.shouldSendPromo(senderId)
+      ) {
+        jobQueue.push({
+          type: "promo",
+          chatId: senderId,
+          userId: senderId,
+          replyText: text,
+        });
+      }
+      processQueue(client, promoter);
+      return;
+    }
 
-      if (msg.isGroup) {
-        const cleanChatId = chatId.replace(/^-100/, "");
-        if (!cleanGroupIds.includes(cleanChatId)) return;
-
-        if (msg.replyTo) {
-          const repliedMsg = await msg.getReplyMessage();
-          if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
-            const answer = getConversationalReply(senderId, msg.text);
-            if (answer) {
-              handleSingleMessage(client, promoter, {
-                chatId,
-                messageId: msg.id,
-                replyText: msg.text,
-                userId: senderId,
-              });
-            }
-          }
+    if (isGroup && msg.replyTo) {
+      const repliedMsg = await msg.getReplyMessage();
+      if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
+        const { reply } = getConversationalReply(senderId, text, 0, false);
+        if (reply) {
+          jobQueue.push({
+            type: "reply",
+            chatId: chatId,
+            messageId: msg.id,
+            replyText: reply,
+            userId: senderId,
+          });
+          processQueue(client, promoter);
         }
       }
-    } catch (err) {}
+    }
   }, new NewMessage({}));
 
   process.on("SIGINT", () => {
-    console.log("Gracefully shutting down...");
+    console.log("Shutting down...");
     process.exit(0);
   });
 }
