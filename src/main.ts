@@ -442,23 +442,60 @@ async function main() {
       return;
     }
 
-    if (isGroup && msg.replyTo) {
-      const repliedMsg = await msg.getReplyMessage();
-      if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
-        const { reply } = getConversationalReply(senderId, text, 0, false);
-        if (reply) {
-          jobQueue.push({
-            type: "reply",
-            chatId: chatId,
-            messageId: msg.id,
-            replyText: reply,
-            userId: senderId,
-          });
-          log.info(
-            `Queued group reply for ${senderId.slice(-6)} in ${chatId.slice(-6)}`,
-          );
-          processQueue(client, promoter);
+    // تشخیص ریپلای در گروه: بررسی replyToMsgId و همچنین getReplyMessage
+    let isReplyToMe = false;
+    let repliedMsg: any = null;
+
+    const replyToMsgId =
+      (msg as any).replyToMsgId || (msg as any).replyTo?.replyToMsgId;
+    if (replyToMsgId) {
+      try {
+        repliedMsg = await msg.getReplyMessage();
+        if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
+          isReplyToMe = true;
         }
+      } catch (err) {
+        log.warn(`Failed to get reply message: ${err}`);
+      }
+    }
+
+    if (!isReplyToMe && msg.replyTo) {
+      try {
+        if (!repliedMsg) repliedMsg = await msg.getReplyMessage();
+        if (repliedMsg && repliedMsg.senderId?.toString() === myId) {
+          isReplyToMe = true;
+        }
+      } catch (err) {}
+    }
+
+    if (isGroup && isReplyToMe) {
+      log.info(
+        `Detected group reply from ${senderId.slice(-6)} in ${chatId.slice(-6)} to my message`,
+      );
+      const { reply } = getConversationalReply(senderId, text, 0, false);
+      if (reply) {
+        jobQueue.push({
+          type: "reply",
+          chatId: chatId,
+          messageId: msg.id,
+          replyText: reply,
+          userId: senderId,
+        });
+        log.info(
+          `Queued group reply for ${senderId.slice(-6)} in ${chatId.slice(-6)}`,
+        );
+        processQueue(client, promoter);
+      } else {
+        log.info(
+          `No reply generated for group reply from ${senderId.slice(-6)}`,
+        );
+      }
+    } else if (isGroup && !isReplyToMe) {
+      const hasReplyTo = !!(msg.replyTo || (msg as any).replyToMsgId);
+      if (hasReplyTo) {
+        log.info(
+          `Group message from ${senderId.slice(-6)} has replyTo but not to me, ignoring`,
+        );
       }
     }
   }, new NewMessage({}));
